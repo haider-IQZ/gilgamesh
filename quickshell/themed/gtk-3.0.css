@@ -1,0 +1,28 @@
+/* Nautilus / GTK3 file choosers: haiderking1's Nautilus Jellybeans Theme
+ * (https://github.com/haiderking1/nautilus-jellybeans-theme, MIT) with its colors as variables.
+ * The bar puts the current theme's @jb_* colors in front of this and writes it to
+ * ~/.config/gtk-3.0/gilgamesh.css. */
+
+@define-color theme_selected_bg_color @jb_sel;
+@define-color theme_selected_fg_color @jb_sel_fg;
+@define-color theme_bg_color @jb_bg;
+@define-color theme_fg_color @jb_fg;
+
+button,
+entry,
+combobox,
+notebook,
+switch {
+    border-radius: 0;
+}
+
+row:selected,
+treeview:selected,
+list:selected {
+    background-color: @jb_sel;
+    color: @jb_sel_fg;
+}
+
+treeview:hover {
+    background-color: alpha(@jb_sel, 0.25);
+}

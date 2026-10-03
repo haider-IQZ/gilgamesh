@@ -1,0 +1,44 @@
+# Gilgamesh's own palette (jellybeans), the default theme
+mode = "dark"
+
+accent = "#99ad6a"
+selection = "#2a2a2a"
+muted = "#555555"
+
+background = "#151515"
+dark_background = "#121212"
+darker_background = "#101010"
+lighter_background = "#2a2a2a"
+
+foreground = "#e8e8d3"
+dark_foreground = "#888888"
+light_foreground = "#c7c7b5"
+bright_foreground = "#ffffff"
+
+red = "#cf6a4c"
+yellow = "#fad07a"
+orange = "#ffb964"
+green = "#99ad6a"
+cyan = "#5fb0b0"
+blue = "#597bc5"
+magenta = "#9b859d"
+brown = "#8f5536"
+
+bright_red = "#f04848"
+bright_yellow = "#fad07a"
+bright_green = "#99ad6a"
+bright_cyan = "#5fb0b0"
+bright_blue = "#8197bf"
+bright_magenta = "#c6b6ee"
+
+# Nautilus: the exact colors of haiderking1's Nautilus Jellybeans Theme
+# (other themes get these from their palette, see Theme.qml)
+gtk_bg = "#151515"
+gtk_bg_alt = "#151515"
+gtk_fg = "#dedede"
+gtk_fg_dim = "#919191"
+gtk_sel = "#464d91"
+gtk_sel_fg = "#eeeeee"
+gtk_red = "#e17373"
+gtk_orange = "#ffa460"
+gtk_scroll = "#3a3a3a"

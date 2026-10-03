@@ -1,0 +1,166 @@
+/* Nautilus / GTK4 + libadwaita: haiderking1's Nautilus Jellybeans Theme
+ * (https://github.com/haiderking1/nautilus-jellybeans-theme, MIT) with its colors as variables.
+ * The bar puts the current theme's @jb_* colors in front of this and writes it to
+ * ~/.config/gtk-4.0/gilgamesh.css. */
+
+/* libadwaita named colors */
+@define-color accent_color @jb_orange;
+@define-color accent_bg_color @jb_sel;
+@define-color accent_fg_color @jb_sel_fg;
+@define-color window_bg_color @jb_bg;
+@define-color window_fg_color @jb_fg;
+@define-color view_bg_color @jb_bg;
+@define-color view_fg_color @jb_fg;
+@define-color headerbar_bg_color @jb_bg;
+@define-color headerbar_fg_color @jb_fg;
+@define-color headerbar_backdrop_color @jb_bg_alt;
+@define-color headerbar_shade_color rgba(0, 0, 0, 0.36);
+@define-color headerbar_darker_shade_color rgba(0, 0, 0, 0.36);
+@define-color sidebar_bg_color @jb_bg_alt;
+@define-color sidebar_backdrop_color @jb_bg_alt;
+@define-color sidebar_fg_color @jb_fg;
+@define-color sidebar_backdrop_fg_color @jb_fg_dim;
+@define-color sidebar_shade_color rgba(0, 0, 0, 0.36);
+@define-color card_bg_color @jb_bg;
+@define-color card_fg_color @jb_fg;
+@define-color popover_bg_color @jb_bg;
+@define-color popover_fg_color @jb_fg;
+@define-color dialog_bg_color @jb_bg;
+@define-color dialog_fg_color @jb_fg;
+@define-color thumbnail_bg_color @jb_bg_alt;
+
+window,
+headerbar,
+.top-bar {
+    background-color: @jb_bg;
+    color: @jb_fg;
+    border-radius: 0;
+}
+
+/* Places sidebar */
+.navigation-sidebar,
+placessidebar {
+    background-color: @jb_bg_alt;
+}
+
+.navigation-sidebar > row:selected,
+placessidebar row:selected {
+    background-color: @jb_sel;
+    color: @jb_sel_fg;
+}
+
+.navigation-sidebar > row:hover,
+placessidebar row:hover {
+    background-color: alpha(@jb_sel, 0.35);
+}
+
+/* File rows and grid items */
+row:selected,
+.child:selected,
+selection,
+:selected {
+    background-color: @jb_sel;
+    color: @jb_sel_fg;
+}
+
+entry search,
+button {
+    border-radius: 0;
+}
+
+entry:focus-within,
+headerbar button:focus-visible {
+    outline-color: @jb_orange;
+}
+
+button.suggested-action {
+    background-color: @jb_sel;
+    color: @jb_sel_fg;
+}
+
+button.destructive-action {
+    background-color: @jb_red;
+    color: @jb_bg;
+}
+
+scrollbar slider {
+    background-color: @jb_scroll;
+    border-radius: 0;
+}
+
+scrollbar slider:hover {
+    background-color: @jb_sel;
+}
+
+/* Main file canvas */
+.view,
+gridview,
+listview,
+iconview,
+flowbox,
+stack,
+scrolledwindow,
+scrolledwindow > viewport {
+    background-color: @jb_bg;
+    color: @jb_fg;
+}
+
+textview,
+textview > text {
+    background-color: @jb_bg;
+    color: @jb_fg;
+}
+
+.nautilus-window .content-pane,
+.nautilus-window .nautilus-window-pane {
+    background-color: @jb_bg;
+}
+
+/* Flush headerbar controls */
+headerbar entry,
+headerbar button:not(.suggested-action):not(.destructive-action),
+headerbar windowcontrols > button,
+.path-bar > button {
+    background-color: transparent;
+    background-image: none;
+    color: @jb_fg;
+    border-color: transparent;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+headerbar menubutton,
+headerbar splitbutton,
+headerbar windowcontrols,
+headerbar windowcontrols > button > image {
+    background-color: transparent;
+    background-image: none;
+    border-color: transparent;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+headerbar windowcontrols > button:hover > image,
+headerbar button:hover:not(.suggested-action):not(.destructive-action) {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: @jb_fg;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+headerbar button:active:not(.suggested-action):not(.destructive-action) {
+    background-color: rgba(255, 255, 255, 0.10);
+}
+
+/* Nautilus tints the container around the breadcrumb and three-dot menu. */
+headerbar .nautilus-pathbar {
+    background: transparent;
+    border-color: transparent;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+headerbar button:checked:not(.suggested-action):not(.destructive-action) {
+    background-color: @jb_sel;
+    color: @jb_sel_fg;
+}

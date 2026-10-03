@@ -1,0 +1,64 @@
+# Gilgamesh prompt, v1 (jellybeans palette, same as ~/hq)
+#
+#  ~/code/gilgamesh    master +12 -3  ❄️ nix              󱦟 3s
+# ❯
+
+# no blank line at the top of a fresh terminal; prompt.fish adds one after each command instead
+add_newline = false
+palette = "jellybeans"
+
+format = """
+$directory\
+$git_branch\
+$git_metrics\
+$nix_shell\
+$line_break\
+$character"""
+
+right_format = "$cmd_duration"
+
+[directory]
+style = "bold blue"
+format = "[$path]($style)[$read_only]($read_only_style) "
+# full path from home (~/code/shadow), never shortened, also inside git repos
+truncation_length = 0
+truncate_to_repo = false
+read_only = " 󰌾"
+read_only_style = "red"
+
+[git_branch]
+style = "purple"
+format = "[ $branch]($style) "
+
+[git_metrics]
+disabled = false
+added_style = "bold green"
+deleted_style = "bold red"
+format = "([+$added]($added_style) )([-$deleted]($deleted_style) )"
+
+[nix_shell]
+style = "cyan"
+format = "[❄️ $state]($style) "
+impure_msg = "nix"
+pure_msg = "pure"
+
+[cmd_duration]
+min_time = 2000
+style = "bright_black"
+format = "[󱦟 $duration]($style)"
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+vimcmd_symbol = "[❮](bold green)"
+
+[palettes.jellybeans]
+black = "#151515"
+red = "#cf6a4c"
+green = "#99ad6a"
+yellow = "#fad07a"
+blue = "#597bc5"
+purple = "#9b859d"
+cyan = "#5fb0b0"
+white = "#e8e8d3"
+bright_black = "#888888"

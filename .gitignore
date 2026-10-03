@@ -1,0 +1,5 @@
+# logo design drafts: preview images and the 14 fonts they were drawn with (75 MB);
+# the final logo and its font live in branding/ and branding/fonts/
+branding/drafts/
+*.swp
+*~

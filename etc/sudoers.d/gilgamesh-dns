@@ -1,0 +1,5 @@
+# Switching between the stock DNS providers is a one-click toggle in the bar's network
+# panel, so it must not stop for a password. Custom is deliberately absent: it points the
+# machine at servers the caller supplies, and it runs in a terminal that can ask.
+# (Gilgamesh only. On the NixOS host, being in the `networkmanager` group is enough.)
+%wheel ALL=(root) NOPASSWD: /usr/bin/gilgamesh-dns DHCP, /usr/bin/gilgamesh-dns Cloudflare, /usr/bin/gilgamesh-dns Google, /usr/bin/gilgamesh-dns OpenDNS
