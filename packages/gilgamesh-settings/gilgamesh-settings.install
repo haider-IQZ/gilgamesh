@@ -1,0 +1,51 @@
+_set_hyprland_capability() {
+    if [[ -f /usr/bin/Hyprland ]]; then
+        setcap cap_sys_nice=ep /usr/bin/Hyprland ||
+            printf '%s\n' 'gilgamesh-settings: could not set the Hyprland realtime capability.' >&2
+    fi
+}
+
+_update_dconf() {
+    # Compiles /etc/dconf/db/local.d (the dark desktop defaults) into the local system database.
+    dconf update ||
+        printf '%s\n' 'gilgamesh-settings: dconf update failed; run it as root to apply the desktop defaults.' >&2
+}
+
+_initramfs_reminder() {
+    printf '%s\n' \
+        'gilgamesh-settings: review /etc/mkinitcpio.conf.d/gilgamesh.conf and any .pacnew.' \
+        'After applying initramfs changes, run mkinitcpio -P as root before rebooting.'
+}
+
+pre_upgrade() {
+    # Scriptlets run in separate processes; retain the old package payload checksum.
+    # For packages predating the checksum file, compare the installed drop-in.
+    if [[ -r /usr/share/gilgamesh/settings/mkinitcpio.sha256 ]]; then
+        cat /usr/share/gilgamesh/settings/mkinitcpio.sha256 > /run/gilgamesh-settings-mkinitcpio.before
+    elif [[ -r /etc/mkinitcpio.conf.d/gilgamesh.conf ]]; then
+        sha256sum < /etc/mkinitcpio.conf.d/gilgamesh.conf > /run/gilgamesh-settings-mkinitcpio.before
+    else
+        printf 'missing\n' > /run/gilgamesh-settings-mkinitcpio.before
+    fi
+}
+
+post_install() {
+    _set_hyprland_capability
+    _update_dconf
+    _initramfs_reminder
+}
+
+post_upgrade() {
+    _set_hyprland_capability
+    _update_dconf
+    if [[ ! -r /run/gilgamesh-settings-mkinitcpio.before ||
+          $(</run/gilgamesh-settings-mkinitcpio.before) != $(</usr/share/gilgamesh/settings/mkinitcpio.sha256) ]]; then
+        _initramfs_reminder
+    fi
+    rm -f /run/gilgamesh-settings-mkinitcpio.before
+}
+
+post_remove() {
+    # Drops the compiled database now that its keyfiles are gone.
+    _update_dconf
+}

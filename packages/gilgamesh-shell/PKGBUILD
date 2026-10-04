@@ -1,0 +1,50 @@
+pkgname=gilgamesh-shell
+pkgver=0.1.0
+pkgrel=3
+pkgdesc='Gilgamesh desktop and shell defaults'
+arch=('any')
+license=('MIT')
+depends=('quickshell' 'hyprland' 'fish' 'starship' 'fzf' 'foot' 'fastfetch'
+         'inter-font' 'ttf-jetbrains-mono-nerd' 'papirus-icon-theme' 'gilgamesh-settings')
+makedepends=('starship')
+backup=('etc/fastfetch/config.jsonc')
+optdepends=('hyprpolkitagent: graphical authentication prompts'
+            'firefox: browser shortcut'
+            'nautilus: file manager shortcut'
+            'grim: screenshots' 'slurp: screenshot region selection'
+            'wl-clipboard: screenshot clipboard'
+            'mpv: local music playback' 'yt-dlp: media downloads'
+            'ffmpeg: media conversion')
+
+build() {
+    starship init fish --print-full-init > "$srcdir/starship-init.fish"
+}
+
+package() {
+    # Build from the full checkout; makepkg source archives do not include sibling folders.
+    local repo="${GILGAMESH_ROOT:-$startdir/../..}" file
+    cd "$repo" || return 1
+
+    while IFS= read -r -d '' file; do
+        install -Dm644 "$file" "$pkgdir/usr/share/gilgamesh/$file"
+    done < <(find quickshell -type f -print0)
+    install -Dm644 fish/{colors.fish,prompt.fish,greeting.fish,starship.toml} \
+        -t "$pkgdir/usr/share/gilgamesh/fish"
+    # fastfetch finds /etc/fastfetch/config.jsonc by itself; a user's own config replaces it.
+    install -Dm644 fish/fastfetch/config.jsonc "$pkgdir/etc/fastfetch/config.jsonc"
+    install -Dm644 fish/fastfetch/logo.txt "$pkgdir/usr/share/gilgamesh/fastfetch/logo.txt"
+    # Theme changes must also respect the user's own Starship configuration.
+    # shellcheck disable=SC2016 # These variables are evaluated by fish at startup.
+    sed -i 's|^    test -f $dir/starship.toml;|    test ! -f "$HOME/.config/starship.toml"; and test ! -f "$XDG_CONFIG_HOME/starship.toml"; and test -f $dir/starship.toml;|' \
+        "$pkgdir/usr/share/gilgamesh/fish/colors.fish"
+    install -Dm644 "$srcdir/starship-init.fish" \
+        "$pkgdir/usr/share/gilgamesh/fish/starship-init.fish"
+    install -Dm644 hypr/hyprland.lua "$pkgdir/usr/share/gilgamesh/hypr/hyprland.lua"
+    # Also selects the packaged bar for its restart command and every qs IPC call.
+    sed -i '1i hl.env("QS_CONFIG_PATH", "/usr/share/gilgamesh/quickshell")' \
+        "$pkgdir/usr/share/gilgamesh/hypr/hyprland.lua"
+
+    install -Dm644 "$startdir/gilgamesh.fish" \
+        "$pkgdir/usr/share/fish/vendor_conf.d/gilgamesh.fish"
+    install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,58 @@
+pkgname=gilgamesh-settings
+pkgver=0.1.0
+pkgrel=4
+pkgdesc='Gilgamesh system defaults and DNS helper'
+arch=('any')
+license=('MIT')
+depends=('zram-generator' 'pipewire' 'pipewire-pulse' 'wireplumber' 'rtkit'
+         'networkmanager' 'systemd' 'libcap' 'kmod' 'mkinitcpio' 'lz4' 'dconf'
+         'bash' 'coreutils' 'gawk' 'sudo')
+optdepends=('hyprland: compositor realtime capability'
+            'ly: login service defaults'
+            'polkit: graphical authentication for custom DNS'
+            'adw-gtk-theme: the default dark GTK theme'
+            'papirus-icon-theme: the default icon theme'
+            'xdg-desktop-portal-gtk: dark color scheme for Firefox and libadwaita apps')
+backup=('etc/mkinitcpio.conf.d/gilgamesh.conf' 'etc/sudoers.d/gilgamesh-dns'
+        'etc/dconf/db/local.d/00-gilgamesh' 'etc/xdg-desktop-portal/hyprland-portals.conf')
+install=gilgamesh-settings.install
+
+package() {
+    # Build from the full checkout; makepkg source archives do not include sibling folders.
+    local repo="${GILGAMESH_ROOT:-$startdir/../..}" file target
+    cd "$repo/system" || return 1
+
+    while IFS= read -r -d '' file; do
+        file=${file#./}
+        if [[ $file == etc/systemd/user/localsearch-3.service && -L $file && $(readlink "$file") == /dev/null ]]; then
+            # Replace this mask with the non-conflicting vendor drop-in below.
+            continue
+        fi
+        if [[ ! -f $file || -L $file ]]; then
+            printf 'Unsupported system file type: %s\n' "$file" >&2
+            return 1
+        fi
+        case $file in
+            # dconf update only compiles /etc/dconf/db; portals.conf stays out of a path a portal package could claim.
+            etc/mkinitcpio.conf.d/*.conf|etc/dconf/db/*.d/*|etc/xdg-desktop-portal/*-portals.conf) target=$file ;;
+            # dconf profiles have a vendor location under /usr/share, read before /etc.
+            etc/pipewire/pipewire.conf.d/*.conf|etc/pipewire/pipewire-pulse.conf.d/*.conf|etc/wireplumber/wireplumber.conf.d/*.conf|etc/dconf/profile/*)
+                target=usr/share/${file#etc/} ;;
+            etc/sysctl.d/*.conf|etc/udev/rules.d/*.rules|etc/modprobe.d/*.conf|etc/modules-load.d/*.conf|etc/tmpfiles.d/*.conf|etc/NetworkManager/conf.d/*.conf|etc/systemd/journald.conf.d/*.conf|etc/systemd/system.conf.d/*.conf|etc/systemd/system/ly@.service.d/*.conf|etc/systemd/zram-generator.conf)
+                target=usr/lib/${file#etc/} ;;
+            usr/share/libalpm/hooks/*.hook) target=$file ;;
+            *) printf 'Unmapped system file: %s\n' "$file" >&2; return 1 ;;
+        esac
+        install -Dm644 "$file" "$pkgdir/$target"
+    done < <(find . -mindepth 1 ! -type d -print0)
+
+    install -dm755 "$pkgdir/usr/share/gilgamesh/settings"
+    sha256sum < etc/mkinitcpio.conf.d/gilgamesh.conf > \
+        "$pkgdir/usr/share/gilgamesh/settings/mkinitcpio.sha256"
+    # A vendor mask would collide with localsearch's own unit file.
+    install -Dm644 "$startdir/10-gilgamesh.conf" \
+        "$pkgdir/usr/lib/systemd/user/localsearch-3.service.d/10-gilgamesh.conf"
+    install -Dm755 "$repo/scripts/gilgamesh-dns" "$pkgdir/usr/bin/gilgamesh-dns"
+    install -Dm440 "$repo/etc/sudoers.d/gilgamesh-dns" "$pkgdir/etc/sudoers.d/gilgamesh-dns"
+    install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

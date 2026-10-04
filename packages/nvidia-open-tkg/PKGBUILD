@@ -1,0 +1,61 @@
+# Based on Arch's nvidia-open (maintainers: Sven-Hendrik Haase, Peter Jung).
+
+pkgname=nvidia-open-tkg
+pkgver=615.71.09
+pkgrel=1
+pkgdesc="NVIDIA open kernel modules for linux-tkg"
+arch=('x86_64')
+url="https://github.com/NVIDIA/open-gpu-kernel-modules"
+depends=('linux-tkg' "nvidia-utils=${pkgver}" 'libglvnd')
+makedepends=('linux-tkg-headers' "nvidia-open-dkms=$pkgver")
+license=('MIT AND GPL-2.0-only')
+options=('!strip' '!debug')
+conflicts=('nvidia-open-dkms' 'nvidia-open' 'nvidia')
+provides=('NVIDIA-MODULE' 'nvidia-open')
+
+_kernel() {
+    _kernelpkg=$(pacman -Q linux-tkg-headers) || return 1
+    _kernelpkg=${_kernelpkg#* }
+    if [[ $(pacman -Q linux-tkg) != "linux-tkg ${_kernelpkg}" ]]; then
+        echo "linux-tkg and linux-tkg-headers must have the same package version" >&2
+        return 1
+    fi
+
+    if [[ -r /usr/src/linux-tkg/version ]]; then
+        _kernver=$(</usr/src/linux-tkg/version)
+    else
+        _kernver=$(pacman -Qlq linux-tkg-headers | sed -n 's|^/usr/lib/modules/\([^/]*\)/build/Makefile$|\1|p')
+    fi
+    if [[ -z $_kernver || $_kernver == *$'\n'* || ! -d /usr/lib/modules/${_kernver}/build ]]; then
+        echo "Cannot find a unique kernel release in linux-tkg-headers" >&2
+        return 1
+    fi
+}
+
+prepare() {
+    if [[ -n $(pacman -T "nvidia-utils=${pkgver}" "nvidia-open-dkms=${pkgver}") ]]; then
+        echo "Pinned NVIDIA inputs are missing; bootstrap through update mode before building the kernel" >&2
+        return 1
+    fi
+}
+
+build() {
+    _kernel || return 1
+
+    fakeroot dkms build -j "${BUILD_JOBS:-$(nproc)}" --dkmstree "${srcdir}" -m "nvidia/${pkgver}" -k "${_kernver}"
+}
+
+package() {
+    _kernel || return 1
+    depends=("linux-tkg=${_kernelpkg}" "nvidia-utils=${pkgver}" 'libglvnd')
+
+    # dkms may already have compressed them (.ko.zst), depending on its configuration
+    install -Dt "${pkgdir}/usr/lib/modules/${_kernver}/extramodules" -m644 "nvidia/${pkgver}/${_kernver}/${CARCH}/module/"*.ko*
+
+    # compress any module dkms left uncompressed
+    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 {} +
+
+    install -Dm644 /usr/share/licenses/nvidia-open-dkms/LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
+
+# vim:set sw=2 et:

@@ -1,0 +1,2 @@
+# Virtual disks: no I/O scheduler, the host already schedules (the tkg kernel defaults to kyber).
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="vd[a-z]*", ATTR{queue/scheduler}="none"

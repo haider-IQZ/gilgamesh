@@ -1,0 +1,8 @@
+# Dark desktop by default. GTK apps read these GNOME settings (on Hyprland through dconf
+# directly, Firefox and libadwaita apps through the settings portal). Anything a user
+# changes themselves lands in their own database and wins over these.
+# Compiled into /etc/dconf/db/local by `dconf update` (the package install script).
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='adw-gtk3-dark'
+icon-theme='Papirus-Dark'

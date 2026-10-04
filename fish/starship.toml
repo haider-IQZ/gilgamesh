@@ -1,6 +1,6 @@
-# Gilgamesh prompt, v1 (jellybeans palette, same as ~/hq)
+# Gilgamesh prompt, v1 (jellybeans palette)
 #
-#  ~/code/gilgamesh    master +12 -3  ❄️ nix              󱦟 3s
+#  ~/projects/example    master +12 -3  ❄️ nix              󱦟 3s
 # ❯
 
 # no blank line at the top of a fresh terminal; prompt.fish adds one after each command instead
@@ -20,7 +20,7 @@ right_format = "$cmd_duration"
 [directory]
 style = "bold blue"
 format = "[$path]($style)[$read_only]($read_only_style) "
-# full path from home (~/code/shadow), never shortened, also inside git repos
+# full path from home (~/projects/example), never shortened, also inside git repos
 truncation_length = 0
 truncate_to_repo = false
 read_only = " 󰌾"

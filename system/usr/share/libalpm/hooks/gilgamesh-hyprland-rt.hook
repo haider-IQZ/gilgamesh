@@ -1,0 +1,12 @@
+# Hyprland 0.56 asks for realtime scheduling but a normal user isn't allowed it, so frames can lag
+# while every core is busy. Arch gives KWin the same capability. Drop once Hyprland uses rtkit.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/bin/Hyprland
+
+[Action]
+Description = Allowing Hyprland realtime priority...
+When = PostTransaction
+Exec = /usr/bin/setcap cap_sys_nice=ep /usr/bin/Hyprland
