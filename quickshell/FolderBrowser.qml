@@ -3,6 +3,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Qt.labs.folderlistmodel
+import "Paths.js" as Paths
 
 Rectangle {
     id: browser
@@ -20,19 +21,36 @@ Rectangle {
     function up() { const i = path.lastIndexOf("/"); path = i > 0 ? path.slice(0, i) : "/" }
     function pretty(p) { return p.startsWith(shell.home) ? "~" + p.slice(shell.home.length) : p }
 
-    FolderListModel {
-        id: dirs
-        folder: "file://" + (browser.path || browser.shell.home)
-        showFiles: false
-        showHidden: false
-        showDotAndDotDot: false
-        sortField: FolderListModel.Name
+    // Qt 6.11.2's FolderListModel parses the decoded local path as a URL again.
+    // Bind after construction: its initial folder check only decodes once.
+    // TODO: move this model-specific conversion to Paths.js.
+    function folderUrl(p) { return Paths.toFileUrl(p).replace(/%/g, "%25") }
+
+    Loader {
+        id: dirsLoader
+        active: browser.visible
+        onLoaded: item.folder = Qt.binding(() => browser.folderUrl(browser.path || browser.shell.home))
+        sourceComponent: Component {
+            FolderListModel {
+                folder: Paths.toFileUrl("/")
+                showFiles: false
+                showHidden: false
+                showDotAndDotDot: false
+                sortField: FolderListModel.Name
+            }
+        }
     }
-    FolderListModel {   // only counts the matching files in the folder you're looking at
-        id: matches
-        folder: "file://" + (browser.path || browser.shell.home)
-        showDirs: false
-        nameFilters: browser.nameFilters
+    Loader {
+        id: matchesLoader
+        active: browser.visible
+        onLoaded: item.folder = Qt.binding(() => browser.folderUrl(browser.path || browser.shell.home))
+        sourceComponent: Component {
+            FolderListModel {
+                folder: Paths.toFileUrl("/")
+                showDirs: false
+                nameFilters: browser.nameFilters
+            }
+        }
     }
 
     ColumnLayout {
@@ -70,7 +88,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            model: dirs
+            model: dirsLoader.item
             spacing: 2
             boundsBehavior: Flickable.StopAtBounds
             delegate: Rectangle {
@@ -93,7 +111,7 @@ Rectangle {
             }
             Text {
                 anchors.centerIn: parent
-                visible: dirs.count === 0
+                visible: (dirsLoader.item?.count ?? 0) === 0
                 text: "no subfolders"
                 color: browser.shell.dim
                 font { family: browser.shell.font; pixelSize: 13; italic: true }
@@ -106,8 +124,9 @@ Rectangle {
             spacing: 10
             Text {
                 Layout.fillWidth: true
-                text: matches.count + " " + browser.countNoun + (matches.count === 1 ? "" : "s") + " here"
-                color: matches.count > 0 ? browser.shell.green : browser.shell.dim
+                readonly property int count: matchesLoader.item?.count ?? 0
+                text: count + " " + browser.countNoun + (count === 1 ? "" : "s") + " here"
+                color: count > 0 ? browser.shell.green : browser.shell.dim
                 font { family: browser.shell.font; pixelSize: 13 }
             }
             Repeater {

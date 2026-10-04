@@ -7,6 +7,7 @@
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import "Paths.js" as Paths
 
 Scope {
     id: music
@@ -29,6 +30,18 @@ Scope {
     property bool shuffle: false
     property real volume: 1          // 0..1 (mpv's own volume, separate from the system's)
     property bool muted: false
+    property var positionClients: []
+
+    function setPositionClient(client, wanted) {
+        if (positionClients.includes(client) === wanted) return
+        const next = positionClients.filter(c => c !== client)
+        if (wanted) next.push(client)
+        positionClients = next
+    }
+    onPositionClientsChanged: {
+        if (positionClients.length > 0) askPosition()
+        maybeExtractArt()
+    }
 
     // MprisPlayer-like surface
     readonly property bool connected: ipcLoader.item?.connected ?? false
@@ -76,9 +89,7 @@ Scope {
     }
     function next() { send(["playlist-next", "force"]) }
     function previous() {
-        // like every player: back to the start first, the previous track only near the start
-        if (position > 3) send(["seek", 0, "absolute"])
-        else send(["playlist-prev", "force"])
+        askPosition(8)
     }
     function seekTo(seconds) { send(["seek", seconds, "absolute"]); position = seconds }
     function stop() { send(["stop"]) }
@@ -164,27 +175,32 @@ Scope {
             case "mute": muted = m.data === true; break
             case "metadata": meta = m.data || {}; break
             case "path":
-                if (m.data && m.data !== path) { path = m.data; position = 0; extractArt() }
+                if (m.data && m.data !== path) {
+                    path = m.data
+                    position = 0
+                    artFor = ""
+                    maybeExtractArt()
+                }
                 break
             }
         } else if (m.request_id === 7) {
             position = m.data || 0
+        } else if (m.request_id === 8) {
+            send(m.error === "success" && Number(m.data) > 3 ? ["seek", 0, "absolute"] : ["playlist-prev", "force"])
         }
     }
 
-    // position: asked for once a second while playing (cheaper than observing time-pos),
-    // and once on pause/resume so a paused track shows where it stopped
-    function askPosition() {
+    // Hidden cards do not need position updates; Previous requests its own fresh position.
+    function askPosition(requestId) {
         if (!connected) return
-        ipcLoader.item.write(JSON.stringify({ command: ["get_property", "time-pos"], request_id: 7 }) + "\n")
+        ipcLoader.item.write(JSON.stringify({ command: ["get_property", "time-pos"], request_id: requestId ?? 7 }) + "\n")
         ipcLoader.item.flush()
     }
-    onPausedChanged: askPosition()
+    onPausedChanged: if (positionClients.length > 0) askPosition()
     Timer {
         interval: 1000
         repeat: true
-        running: music.isPlaying
-        triggeredOnStart: true
+        running: music.isPlaying && music.positionClients.length > 0
         onTriggered: music.askPosition()
     }
 
@@ -192,37 +208,58 @@ Scope {
     // ffmpeg copies the picture embedded in the file (yt-dlp embeds the thumbnail).
     // A new file name every time, so the Image doesn't show a cached old cover.
     property int artSerial: 0
-    function extractArt() {
-        trackArtUrl = ""
+    property string artFor: ""
+    function maybeExtractArt() {
+        if (!positionClients.length || !path || artFor === path || artProc.running) return
+        artFor = path
         artSerial++
+        artProc.forPath = path
         artProc.out = cacheDir + "/cover-" + artSerial
-        artProc.running = false
         artProc.running = true
     }
     Process {
         id: artProc
+        property string forPath: ""
         property string out: ""
-        command: ["sh", "-c", "mkdir -p \"$1\" && rm -f \"$1\"/cover-* && ffmpeg -v error -y -i \"$2\" -map 0:v:0 -frames:v 1 -c copy -f image2 \"$3\" && echo ok",
-                  "sh", music.cacheDir, music.path, out]
+        command: ["sh", "-c", "mkdir -p -- \"$1\" && rm -f -- \"$1\"/cover-* && ffmpeg -v error -y -i \"$2\" -map 0:v:0 -frames:v 1 -c copy -f image2 \"$3\" && echo ok",
+                  "sh", music.cacheDir, forPath, out]
         stdout: StdioCollector {
-            onStreamFinished: if (this.text.trim() === "ok" && artProc.out.endsWith("-" + music.artSerial)) music.trackArtUrl = "file://" + artProc.out
+            onStreamFinished: {
+                if (artProc.forPath !== music.path) return
+                music.trackArtUrl = this.text.trim() === "ok" ? Paths.toFileUrl(artProc.out) : ""
+            }
         }
+        onExited: Qt.callLater(music.maybeExtractArt)
     }
 
     // ---------- the track list ----------
-    function refresh() { lister.running = false; lister.running = true }
+    property bool scanPending: false
+    function refresh() {
+        scanPending = true
+        Qt.callLater(startScan)
+    }
+    function startScan() {
+        if (lister.running || !scanPending) return
+        scanPending = false
+        lister.forFolder = folder
+        lister.running = true
+    }
     onFolderChanged: refresh()
+    Component.onCompleted: refresh()
     Process {
         id: lister
-        command: ["find", music.folder, "-type", "f", "-not", "-path", "*/.*"]
+        property string forFolder: ""
+        command: ["find", forFolder.startsWith("/") ? forFolder : "./" + forFolder, "-type", "f", "-not", "-path", "*/.*", "-print0"]
         stdout: StdioCollector {
             onStreamFinished: {
+                if (lister.forFolder !== music.folder) return
                 const ext = f => f.slice(f.lastIndexOf(".") + 1).toLowerCase()
-                music.tracks = this.text.split("\n")
+                music.tracks = this.text.split("\0")
                     .filter(f => f !== "" && music.audioExt.includes(ext(f)))
                     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
             }
         }
+        onExited: Qt.callLater(music.startScan)
     }
 
     // ---------- yt-dlp downloads ----------
@@ -243,8 +280,8 @@ Scope {
         dl.command = ["yt-dlp", "--no-playlist", "--extract-audio",
                       "--embed-metadata", "--embed-thumbnail", "--convert-thumbnails", "jpg",
                       "--paths", folder, "--output", "%(title)s.%(ext)s",
-                      "--newline", "--progress", "--progress-template", "download:GIL|%(info.title)s|%(progress._percent_str)s",
-                      "--print", "after_move:DONE|%(filepath)s", url]
+                      "--newline", "--progress", "--progress-template", "download:GIL[%(info.title)j,%(progress._percent_str)j]",
+                      "--print", "after_move:DONE%(filepath)j", "--", url]
         dl.running = true
     }
     property bool dlCancelled: false
@@ -255,15 +292,20 @@ Scope {
         property string lastError: ""
         stdout: SplitParser {
             onRead: line => {
-                const p = line.split("|")
-                if (p[0] === "GIL") {
-                    music.dlTitle = p[1]
-                    music.dlPercent = parseFloat(p[2]) || 0
-                } else if (p[0] === "DONE") {
+                let value
+                try {
+                    if (line.startsWith("GIL")) value = JSON.parse(line.slice(3))
+                    else if (line.startsWith("DONE")) value = JSON.parse(line.slice(4))
+                    else return
+                } catch (e) { return }
+                if (line.startsWith("GIL") && Array.isArray(value) && typeof value[0] === "string") {
+                    music.dlTitle = value[0]
+                    music.dlPercent = parseFloat(value[1]) || 0
+                } else if (line.startsWith("DONE") && typeof value === "string" && value !== "") {
                     music.dlDone++
-                    music.dlTitle = music.name(p[1])
+                    music.dlTitle = music.name(value)
                     // already playing: put it in the queue too
-                    if (music.active) music.send(["loadfile", p[1], "append"])
+                    if (music.active) music.send(["loadfile", value, "append"])
                 }
             }
         }
@@ -271,6 +313,13 @@ Scope {
             onRead: line => { if (line.startsWith("ERROR:")) dl.lastError = line.slice(6).trim() }
         }
         onStarted: lastError = ""
+        onRunningChanged: {
+            if (!running && music.downloading) {
+                music.downloading = false
+                music.dlFailed = true
+                music.dlStatus = "Could not start yt-dlp. Check that it is installed."
+            }
+        }
         onExited: (code, status) => {
             music.downloading = false
             if (code === 0 && music.dlDone > 0) {

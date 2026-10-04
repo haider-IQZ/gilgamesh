@@ -20,15 +20,24 @@ Item {
     readonly property real trackLength: isLocal ? music.length : 0
     readonly property real position: isLocal ? music.position : 0
     property string mode: "playing"   // "playing" or "library"
+    readonly property bool needsPosition: visible && mode === "playing" && isLocal
+    onNeedsPositionChanged: music.setPositionClient(card, needsPosition)
+    Component.onCompleted: music.setPositionClient(card, needsPosition)
+    Component.onDestruction: music.setPositionClient(card, false)
 
     width: 420
     height: col.implicitHeight + 32
     MouseArea { anchors.fill: parent } // clicks on the card don't close it
 
     onVisibleChanged: {
-        if (visible) { music.refresh(); refreshStreams(); if (!player) mode = "library" }
+        if (visible) {
+            if (!player) mode = "library"
+            if (mode === "library" || music.tracks.length === 0) music.refresh()
+            refreshStreams()
+        }
         else { browser.visible = false; streamTimer.stop(); streams = [] }
     }
+    onModeChanged: if (visible && mode === "library") music.refresh()
 
     function fmt(s) {
         s = Math.max(0, Math.floor(s || 0))
@@ -44,10 +53,15 @@ Item {
     // (rebuilding from the live list while a stream disappears can crash Quickshell).
     property var streams: []
     readonly property var liveNodes: Pipewire.nodes.values
+    readonly property bool wantsStreams: visible && mode === "playing" && !!player && !isLocal
     function refreshStreams() {
-        streams = liveNodes.slice().filter(n => n && n.isStream && n.isSink && n.audio)
+        streams = wantsStreams
+            ? liveNodes.filter(n => n && n.isStream && n.isSink && n.audio && ownsStream(player, n))
+            : []
     }
-    onLiveNodesChanged: if (visible) streamTimer.restart()
+    onWantsStreamsChanged: { streamTimer.stop(); refreshStreams() }
+    onPlayerChanged: if (wantsStreams) refreshStreams()
+    onLiveNodesChanged: if (wantsStreams) streamTimer.restart()
     Timer { id: streamTimer; interval: 75; onTriggered: card.refreshStreams() }
     PwObjectTracker { objects: card.streams }
 
@@ -162,7 +176,10 @@ Item {
                     onClicked: browser.visible ? browser.visible = false : browser.open(card.music.folder)
                 }
                 Repeater {
-                    model: card.mode === "playing" && card.shell.mediaList.length > 1 ? card.shell.mediaList : []
+                    model: ScriptModel {
+                        values: card.visible && card.mode === "playing" && card.shell.mediaList.length > 1 ? card.shell.mediaList : []
+                        comparisonMode: ObjectComparison.Identity
+                    }
                     Rectangle {
                         id: playerTab
                         required property var modelData
@@ -252,11 +269,12 @@ Item {
                         Image {
                             id: cover
                             anchors.fill: parent
-                            source: card.player?.trackArtUrl ?? ""
+                            source: card.mode === "playing" ? (card.player?.trackArtUrl ?? "") : ""
                             sourceSize { width: 192; height: 192 }
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
-                            cache: false
+                            retainWhileLoading: true
+                            cache: !card.isLocal
                         }
                     }
                     ColumnLayout {
@@ -434,6 +452,7 @@ Item {
                 readonly property string text: field.text.trim()
                 readonly property bool isLink: /^(https?:\/\/|www\.)/i.test(text)
                 readonly property var shown: {
+                    if (!card.visible || card.mode !== "library") return []
                     const q = isLink ? "" : text.toLowerCase()
                     return q ? card.music.tracks.filter(t => card.music.label(t).toLowerCase().includes(q)) : card.music.tracks
                 }
@@ -549,7 +568,7 @@ Item {
                             width: parent.width * Math.min(1, card.music.dlPercent / 100)
                             height: parent.height; radius: 1.5
                             color: card.shell.green
-                            Behavior on width { NumberAnimation { duration: 200 } }
+                            Behavior on width { enabled: card.visible && card.mode === "library"; NumberAnimation { duration: 200 } }
                         }
                     }
                 }
@@ -575,7 +594,10 @@ Item {
                     clip: true
                     spacing: 1
                     boundsBehavior: Flickable.StopAtBounds
-                    model: library.shown
+                    model: ScriptModel {
+                        values: library.shown
+                        comparisonMode: ObjectComparison.Identity
+                    }
                     delegate: Rectangle {
                         id: trackRow
                         required property string modelData

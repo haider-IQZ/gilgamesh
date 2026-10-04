@@ -9,6 +9,7 @@ import Quickshell.Hyprland
 import QtQuick
 import QtQuick.Shapes
 import QtQuick.Effects
+import "Paths.js" as Paths
 
 Scope {
     id: picker
@@ -47,23 +48,47 @@ Scope {
         open = true
         listFiles()
     }
+    property int scanRevision: 0
+    property int selectionRevision: 0
+    property var pendingScan: null
+    onSelectedChanged: selectionRevision++
+    onOpenChanged: if (!open) { scanRevision++; pendingScan = null }
+    Connections {
+        target: picker.shell.prefs
+        function onWallpaperChanged() { picker.selectionRevision++ }
+    }
     function listFiles() {
         if (!source) return
-        lister.forFolder = source.folder
-        lister.command = ["sh", "-c", "find \"$1\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \\) 2>/dev/null | sort", "sh", source.folder]
-        lister.running = false
+        files = []
+        pendingScan = { id: ++scanRevision, folder: source.folder, selection: selectionRevision }
+        startScan()
+    }
+    function startScan() {
+        if (lister.request || !pendingScan) return
+        lister.request = pendingScan
+        pendingScan = null
+        lister.command = ["sh", "-c", "find \"$1\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \\) -print0 2>/dev/null | sort -z", "sh", lister.request.folder]
         lister.running = true
     }
     Process {
         id: lister
-        property string forFolder: ""
-        stdout: StdioCollector {
-            onStreamFinished: {
-                if (!picker.source || lister.forFolder !== picker.source.folder) return   // a late answer
-                picker.files = this.text.trim().split("\n").filter(f => f !== "")
+        property var request: null
+        stdout: StdioCollector { id: scanOutput }
+        onExited: (code, status) => {
+            const r = request
+            if (r && code === 0 && status === 0 && picker.open && picker.source
+                    && r.id === picker.scanRevision && r.folder === picker.source.folder
+                    && r.selection === picker.selectionRevision) {
+                picker.files = scanOutput.text.split("\0").filter(f => f !== "")
                 const at = picker.files.indexOf(picker.shell.prefs.wallpaper)
                 picker.selected = at >= 0 ? at : 0
             }
+            request = null
+            Qt.callLater(picker.startScan)
+        }
+        onRunningChanged: if (!running && request) {
+            request = null
+            Qt.callLater(picker.startScan)
         }
     }
     function move(d) { if (files.length) selected = (selected + d + files.length) % files.length }
@@ -74,7 +99,10 @@ Scope {
         listFiles()
     }
     function apply() {
-        if (files.length) shell.prefs.wallpaper = files[selected]
+        if (files.length) {
+            shell.theme.wallpaperRevision++
+            shell.prefs.wallpaper = files[selected]
+        }
         open = false
     }
     function niceName(f) { return f.slice(f.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ") }
@@ -181,7 +209,7 @@ Scope {
                         Rectangle { anchors.fill: parent; color: picker.shell.bg }
                         Image {
                             anchors.fill: parent
-                            source: item.file ? "file://" + item.file : ""
+                            source: Paths.toFileUrl(item.file)
                             // decoded at the big card's size, so moving around never reloads it
                             sourceSize { width: picker.expandedWidth; height: picker.expandedHeight }
                             fillMode: Image.PreserveAspectCrop

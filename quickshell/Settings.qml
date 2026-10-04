@@ -7,6 +7,7 @@ import Quickshell.Services.Pipewire
 import Quickshell.Networking
 import QtQuick
 import QtQuick.Layouts
+import "Paths.js" as Paths
 
 FloatingWindow {
     id: win
@@ -20,6 +21,11 @@ FloatingWindow {
     onClosed: visible = false
 
     property string page: "network"
+    onPageChanged: {
+        if (!visible) return
+        if (page === "wallpaper") wallPage.pickSource()
+        else browser.visible = false
+    }
     readonly property var pages: [
         { id: "network",       label: "Network",       icon: 0xF0200 },
         { id: "sound",         label: "Sound",         icon: 0xF057E },
@@ -45,6 +51,7 @@ FloatingWindow {
 
     RowLayout {
         anchors.fill: parent
+        visible: win.visible
         spacing: 0
 
         // ---------- sidebar ----------
@@ -137,12 +144,13 @@ FloatingWindow {
                 spacing: 18
                 property string dns: ""
                 property string pending: ""
+                property string dnsError: ""
                 property string ip: ""
                 readonly property var providers: ["DHCP", "Cloudflare", "Google", "OpenDNS", "Custom"]
                 function refresh() {
                     dnsRead.running = true
                     if (win.shell.netDevice) {
-                        ipRead.command = ["sh", "-c", "ip -4 -o addr show dev " + win.shell.netDevice.name + " | awk '{print $4}' | head -1"]
+                        ipRead.command = ["sh", "-c", "ip -4 -o addr show dev \"$1\" | awk '{print $4}' | head -1", "sh", win.shell.netDevice.name]
                         ipRead.running = true
                     }
                 }
@@ -151,7 +159,20 @@ FloatingWindow {
                     stdout: StdioCollector { onStreamFinished: netPage.dns = this.text.trim() } }
                 Process { id: ipRead
                     stdout: StdioCollector { onStreamFinished: netPage.ip = this.text.trim() } }
-                Process { id: dnsSet; onExited: { netPage.pending = ""; dnsRead.running = true } }
+                Process {
+                    id: dnsSet
+                    onRunningChanged: {
+                        if (!running && netPage.pending !== "") {
+                            netPage.pending = ""
+                            netPage.dnsError = "Could not start " + command[0] + ". Check that it is installed."
+                        }
+                    }
+                    onExited: exitCode => {
+                        netPage.pending = ""
+                        if (exitCode !== 0) netPage.dnsError = "DNS change failed (exit " + exitCode + ")."
+                        dnsRead.running = true
+                    }
+                }
 
                 Title { text: "Network" }
 
@@ -218,6 +239,7 @@ FloatingWindow {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     if (netPage.pending !== "") return
+                                    netPage.dnsError = ""
                                     netPage.pending = parent.modelData
                                     dnsSet.command = parent.modelData === "Custom"
                                         ? ["foot", "--app-id", "gilgamesh-dns", "-e", "gilgamesh-dns", "Custom"]
@@ -227,6 +249,14 @@ FloatingWindow {
                             }
                         }
                     }
+                }
+                Text {
+                    visible: netPage.dnsError !== ""
+                    Layout.fillWidth: true
+                    text: netPage.dnsError
+                    wrapMode: Text.Wrap
+                    color: win.shell.red
+                    font { family: win.shell.font; pixelSize: 13 }
                 }
                 Item { Layout.fillHeight: true }
             }
@@ -248,17 +278,21 @@ FloatingWindow {
                     sources = nodes.filter(n => n && !n.isSink && !n.isStream && isAudio(n) && n.name !== "quickshell")
                 }
                 onLiveNodesChanged: if (visible) soundTimer.restart()
-                onVisibleChanged: { if (visible) refresh(); else { sinks = []; sources = [] } }
-                Timer { id: soundTimer; interval: 75; onTriggered: soundPage.refresh() }
+                onVisibleChanged: { if (visible) refresh(); else { soundTimer.stop(); sinks = []; sources = [] } }
+                Timer { id: soundTimer; interval: 75; onTriggered: if (soundPage.visible) soundPage.refresh() }
                 PwObjectTracker { objects: soundPage.sinks.concat(soundPage.sources) }
 
                 Title { text: "Sound" }
 
                 Repeater {
-                    model: [
-                        { title: "OUTPUT", isOutput: true,  node: Pipewire.defaultAudioSink,   devices: soundPage.sinks,   accent: win.shell.cyan },
-                        { title: "INPUT",  isOutput: false, node: Pipewire.defaultAudioSource, devices: soundPage.sources, accent: win.shell.purple }
-                    ]
+                    model: ScriptModel {
+                        objectProp: "isOutput"
+                        comparisonMode: ObjectComparison.Identity
+                        values: [
+                            { title: "OUTPUT", isOutput: true,  node: Pipewire.defaultAudioSink,   devices: soundPage.sinks,   accent: win.shell.cyan },
+                            { title: "INPUT",  isOutput: false, node: Pipewire.defaultAudioSource, devices: soundPage.sources, accent: win.shell.purple }
+                        ]
+                    }
                     ColumnLayout {
                         id: sec
                         required property var modelData
@@ -306,7 +340,7 @@ FloatingWindow {
                         }
                         // devices
                         Repeater {
-                            model: sec.modelData.devices
+                            model: ScriptModel { values: sec.modelData.devices; comparisonMode: ObjectComparison.Identity }
                             Rectangle {
                                 id: dev
                                 required property var modelData
@@ -378,7 +412,7 @@ FloatingWindow {
                         columnSpacing: 12
 
                         Repeater {
-                            model: win.shell.theme.names
+                            model: ScriptModel { values: win.shell.theme.names; comparisonMode: ObjectComparison.Identity }
                             Rectangle {
                                 id: themeCard
                                 required property string modelData
@@ -429,7 +463,7 @@ FloatingWindow {
                                         text: "<span style='color:" + (themeCard.p.green || "") + "'>git</span> "
                                             + "<span style='color:" + (themeCard.p.foreground || "") + "'>commit -m</span> "
                                             + "<span style='color:" + (themeCard.p.yellow || "") + "'>\"update\"</span>"
-                                            + "<span style='color:" + (themeCard.p.dark_foreground || "") + "'>  # ~/hq</span>"
+                                            + "<span style='color:" + (themeCard.p.dark_foreground || "") + "'>  # ~/code</span>"
                                         font { family: "JetBrainsMono Nerd Font"; pixelSize: 12 }
                                     }
                                 }
@@ -470,16 +504,20 @@ FloatingWindow {
                     const m = current.match(/\/themes\/([^/]+)\/backgrounds\//)
                     source = m ? m[1] : "yours"
                 }
-                // the command is built here, from the folder right now (a binding on it could still
-                // hold the previous tab's folder when this runs), and a late answer for another
-                // folder is thrown away
+                property bool scanPending: false
                 function refresh() {
+                    scanPending = true
+                    Qt.callLater(startScan)
+                }
+                // Keep the result's folder fixed until the process has exited.
+                function startScan() {
+                    if (!visible || listWalls.running || !scanPending) return
+                    scanPending = false
                     listWalls.forFolder = folder
-                    listWalls.command = ["sh", "-c", "find \"$1\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.gif' \\) | sort", "sh", folder]
-                    listWalls.running = false
+                    listWalls.command = ["sh", "-c", "find \"$1\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.gif' \\) -print0 | sort -z", "sh", folder.startsWith("/") ? folder : "./" + folder]
                     listWalls.running = true
                 }
-                onFolderChanged: refresh()
+                onFolderChanged: if (visible) refresh()
                 function useFolder(path) { win.shell.prefs.wallpaperFolder = path }
                 function setWall(path) { win.shell.prefs.wallpaper = path }
                 // pick one ourselves (never the current one) so the highlight can move instantly
@@ -487,10 +525,7 @@ FloatingWindow {
                     const others = files.filter(f => f !== current)
                     if (others.length > 0) setWall(others[Math.floor(Math.random() * others.length)])
                 }
-                onVisibleChanged: {
-                    if (visible) { win.shell.theme.refresh(); pickSource(); refresh() }
-                    else browser.visible = false
-                }
+                onVisibleChanged: if (visible) { win.shell.theme.refresh(); refresh() }
 
                 Process {
                     id: listWalls
@@ -498,9 +533,10 @@ FloatingWindow {
                     stdout: StdioCollector {
                         onStreamFinished: {
                             if (listWalls.forFolder !== wallPage.folder) return
-                            wallPage.files = this.text.trim().split("\n").filter(l => l !== "")
+                            wallPage.files = this.text.split("\0").filter(l => l !== "")
                         }
                     }
+                    onExited: Qt.callLater(wallPage.startScan)
                 }
                 Process { id: openProc }
 
@@ -533,7 +569,7 @@ FloatingWindow {
                     Layout.fillWidth: true
                     spacing: 8
                     Repeater {
-                        model: wallPage.themesWithWalls.concat(["yours"])
+                        model: ScriptModel { values: wallPage.themesWithWalls.concat(["yours"]); comparisonMode: ObjectComparison.Identity }
                         Rectangle {
                             id: tab
                             required property string modelData
@@ -657,7 +693,7 @@ FloatingWindow {
 
                                 Image {
                                     anchors { fill: parent; margins: thumb.isCurrent ? 3 : 0 }
-                                    source: "file://" + thumb.modelData
+                                    source: Paths.toFileUrl(thumb.modelData)
                                     sourceSize.width: 400
                                     fillMode: Image.PreserveAspectCrop
                                     asynchronous: true
@@ -694,7 +730,7 @@ FloatingWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             x: win.shell.dnd ? parent.width - width - 3 : 3
                             color: win.shell.fg
-                            Behavior on x { NumberAnimation { duration: 120 } }
+                            Behavior on x { enabled: win.visible && win.page === "notifications"; NumberAnimation { duration: 120 } }
                         }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: { win.shell.dnd = !win.shell.dnd; if (win.shell.dnd) win.shell.popups = [] } }

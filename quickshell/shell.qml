@@ -15,6 +15,7 @@ import Quickshell.Services.Notifications
 import Quickshell.Services.Mpris
 import QtQuick
 import QtQuick.Layouts
+import "Paths.js" as Paths
 
 ShellRoot {
     id: root
@@ -54,7 +55,7 @@ ShellRoot {
 
     // the 永 logo in the theme's colors (the SVG's own green/dark swapped at load)
     property string logoSvg: ""
-    FileView { path: Qt.resolvedUrl("gilgamesh-logo.svg").toString().replace("file://", ""); onLoaded: root.logoSvg = text() }
+    FileView { path: Paths.fromFileUrl(Qt.resolvedUrl("gilgamesh-logo.svg")); onLoaded: root.logoSvg = text() }
     readonly property string logo: logoSvg
         ? "data:image/svg+xml;utf8," + encodeURIComponent(logoSvg.replace(/#99ad6a/gi, themeEngine.green.toString()).replace(/#151515/gi, themeEngine.bg.toString()))
         : Qt.resolvedUrl("gilgamesh-logo.svg")
@@ -79,17 +80,23 @@ ShellRoot {
     readonly property string home: Quickshell.env("HOME")
     readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/gilgamesh"
     readonly property var prefs: prefsAdapter
+    property bool prefsReady: false
     Process { running: true; command: ["mkdir", "-p", root.stateDir + "/theme"] }
     FileView {
         path: root.stateDir + "/settings.json"
         watchChanges: true
         onFileChanged: reload()
         onAdapterUpdated: writeAdapter()
-        onLoadFailed: writeAdapter()   // first run: create it with the defaults below
+        onLoaded: { root.prefsReady = true; Qt.callLater(themeEngine.ensureWallpaper) }
+        onLoadFailed: {
+            writeAdapter()   // first run: create it with the defaults below
+            root.prefsReady = true
+            Qt.callLater(themeEngine.ensureWallpaper)
+        }
         JsonAdapter {
             id: prefsAdapter
             property string wallpaperFolder: ""   // empty = the user's Pictures folder
-            property string wallpaper: ""         // empty = plain background color
+            property string wallpaper: ""         // empty or missing file = a theme background
             property bool barTransparent: false   // toggled by double-clicking the bar
             property string theme: ""             // empty = jellybeans
             property var themeWallpapers: ({})    // theme -> the wallpaper you last picked with it
@@ -101,15 +108,29 @@ ShellRoot {
     // the user's Pictures and Music folders, from the standard XDG user-dirs file
     property string picturesDir: home + "/Pictures"
     property string musicDir: home + "/Music"
+    function userDir(contents, key) {
+        const m = contents.match(new RegExp('^XDG_' + key + '_DIR="((?:\\\\[\\s\\S]|[^"\\\\])*)"[ \\t]*(?:#.*)?$', "m"))
+        if (!m) return ""
+        let value = m[1], result = ""
+        const prefix = value.match(/^\$(?:HOME|\{HOME\})(?=\/|$)/)
+        if (prefix) { result = home; value = value.slice(prefix[0].length) }
+        // Decode double-quoted shell escapes, without expanding variables or commands.
+        for (let i = 0; i < value.length; i++) {
+            const c = value[i]
+            if (c === "\\" && i + 1 < value.length) {
+                const next = value[++i]
+                if (next === "\n") continue
+                result += '\\"$`'.includes(next) ? next : "\\" + next
+            } else if (c === "$" || c === "`") return ""
+            else result += c
+        }
+        return result.startsWith("/") ? result : ""
+    }
     FileView {
-        path: root.home + "/.config/user-dirs.dirs"
+        path: (Quickshell.env("XDG_CONFIG_HOME") || root.home + "/.config") + "/user-dirs.dirs"
         onLoaded: {
-            const dir = key => {
-                const m = text().match(new RegExp("^XDG_" + key + "_DIR=\"(.*)\"$", "m"))
-                return m ? m[1].replace("$HOME", root.home) : ""
-            }
-            root.picturesDir = dir("PICTURES") || root.picturesDir
-            root.musicDir = dir("MUSIC") || root.musicDir
+            root.picturesDir = root.userDir(text(), "PICTURES") || root.picturesDir
+            root.musicDir = root.userDir(text(), "MUSIC") || root.musicDir
         }
     }
     readonly property string wallpaperFolder: prefs.wallpaperFolder || picturesDir
@@ -175,9 +196,10 @@ ShellRoot {
         path: "/proc/meminfo"
         onLoaded: {
             const t = text()
-            const kb = key => { const m = t.match(new RegExp("^" + key + ":\\s+(\\d+)", "m")); return m ? Number(m[1]) : 0 }
-            root.memTotal = kb("MemTotal")
-            root.memUsed = root.memTotal - kb("MemAvailable")
+            const total = /^MemTotal:\s+(\d+)/m.exec(t)
+            const available = /^MemAvailable:\s+(\d+)/m.exec(t)
+            root.memTotal = total ? Number(total[1]) : 0
+            root.memUsed = root.memTotal - (available ? Number(available[1]) : 0)
         }
     }
     Timer { interval: 2000; running: true; repeat: true; triggeredOnStart: true; onTriggered: meminfo.reload() }
@@ -187,7 +209,7 @@ ShellRoot {
     WallpaperPicker { id: wallPicker; shell: root }
     function pickWallpaper() { wallPicker.show() }
 
-    // Gilgamesh Settings window (Settings.qml), opened from the logo
+    // Gilgamesh Settings window (Settings.qml), opened from the launcher or a right click on the logo
     Settings { id: settings; shell: root; visible: false }
     function openSettings(page) { if (page) settings.page = page; settings.visible = true }
     readonly property var settingsPages: settings.pages
@@ -229,8 +251,10 @@ ShellRoot {
     // fresh start fixes it. Every 15s compare with nmcli; if NetworkManager says we're
     // connected but the module has no device twice in a row, restart the bar.
     property int netMismatch: 0
+    onNetDeviceChanged: if (netDevice) netMismatch = 0
     Process {
         id: nmCheck
+        environment: ({ LC_ALL: "C" })
         command: ["nmcli", "-t", "-f", "TYPE,STATE", "device", "status"]
         stdout: StdioCollector {
             onStreamFinished: {
@@ -245,7 +269,7 @@ ShellRoot {
             }
         }
     }
-    Timer { interval: 15000; running: true; repeat: true; onTriggered: nmCheck.running = true }
+    Timer { interval: 15000; running: root.netDevice === null; repeat: true; onTriggered: if (!nmCheck.running) nmCheck.running = true }
 
     // ---------- notifications (replaces mako) ----------
     // Lists only hold plain JS copies. A live Notification object gets destroyed when the
@@ -254,7 +278,15 @@ ShellRoot {
     property var popups: []      // on screen now
     property var history: []     // notification center, newest first
     property var live: ({})      // id -> Notification
+    onHistoryChanged: Qt.callLater(pruneLive)
+    onPopupsChanged: Qt.callLater(pruneLive)
     property bool dnd: false     // Do Not Disturb: no popups, still logged
+    // Fullscreen on the focused workspace: no popups either (critical ones still show).
+    // Any mapped Overlay-layer surface makes Hyprland drop a fullscreen game out of
+    // tearing / direct scanout, so a toast would cost latency. They still land in
+    // history; toasts already up are pulled when fullscreen starts, nothing replays after.
+    readonly property bool fullscreenFocused: Hyprland.focusedWorkspace?.hasFullscreen ?? false
+    onFullscreenFocusedChanged: if (fullscreenFocused) popups = popups.filter(p => p.critical)
 
     NotificationServer {
         keepOnReload: false
@@ -280,7 +312,8 @@ ShellRoot {
         n.closed.connect(() => { delete root.live[o.id]; root.hidePopup(o.id) })
         // an app can replace its notification (same id): drop the old copy
         history = [o].concat(history.filter(h => h.id !== o.id)).slice(0, 50)
-        if (!dnd) popups = popups.filter(p => p.id !== o.id).concat([o]).slice(-5)
+        if (!dnd && (o.critical || !fullscreenFocused))
+            popups = popups.filter(p => p.id !== o.id).concat([o]).slice(-5)
     }
     function notificationIcon(image, appIcon) {
         if (image) return image
@@ -289,6 +322,15 @@ ShellRoot {
         return Quickshell.iconPath(appIcon, true)
     }
     function hidePopup(id) { popups = popups.filter(p => p.id !== id) }
+    function pruneLive() {
+        const keep = new Set(history.map(h => h.id).concat(popups.map(p => p.id)))
+        for (const key of Object.keys(live)) {
+            if (keep.has(Number(key))) continue
+            const n = live[key]
+            delete live[key]
+            try { n?.expire() } catch (e) {}
+        }
+    }
     function dismissNotification(id) {
         try { live[id]?.dismiss() } catch (e) {}
         hidePopup(id)
@@ -299,8 +341,10 @@ ShellRoot {
         hidePopup(id)
     }
     function clearNotifications() {
-        for (const h of history) { try { live[h.id]?.dismiss() } catch (e) {} }
+        const old = Object.values(live)
+        live = ({})
         history = []; popups = []
+        for (const n of old) { try { n?.dismiss() } catch (e) {} }
     }
     function ago(t) {
         const m = Math.floor((clock.date - t) / 60000)
@@ -352,7 +396,8 @@ ShellRoot {
                 anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
                 spacing: 4
 
-                // Gilgamesh logo (永). Click = Gilgamesh Settings
+                // Gilgamesh logo (永). Click = launcher (works even when Super is taken, e.g. in a VM),
+                // right click = Gilgamesh Settings
                 Image {
                     source: root.logo
                     sourceSize { width: 28; height: 28 }
@@ -363,12 +408,17 @@ ShellRoot {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: { dropdown.open = ""; settings.visible = !settings.visible }
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: mouse => {
+                            dropdown.open = ""
+                            if (mouse.button === Qt.RightButton) settings.visible = !settings.visible
+                            else launcher.toggle()
+                        }
                     }
                 }
 
                 Repeater {
-                    model: bar.workspaces
+                    model: ScriptModel { values: bar.workspaces; comparisonMode: ObjectComparison.Identity }
 
                     Rectangle {
                         required property var modelData
@@ -428,20 +478,43 @@ ShellRoot {
                 readonly property string target: root.prefs.wallpaper
                 property var front: imgA
                 property var back: imgB
-                onTargetChanged: {
-                    back.source = target ? "file://" + target : ""
-                    if (!target) stripColor = root.bg
+                property int revision: 0
+                function loadWallpaper() {
+                    fadeIn.stop()
+                    revision++
+                    if (!front || !back) return
+                    back.opacity = 0
+                    back.source = ""
+                    if (!target) {
+                        front.opacity = 0
+                        front.source = ""
+                        sampler.sample(null)
+                        stripColor = root.bg
+                        return
+                    }
+                    back.revision = revision
+                    back.source = Paths.toFileUrl(target)
+                }
+                onTargetChanged: loadWallpaper()
+                Component.onCompleted: loadWallpaper()
+                function fadeReady(img) {
+                    if (!target || img !== back || img.revision !== revision || img.status !== Image.Ready) return
+                    fadeIn.target = img
+                    fadeIn.revision = revision
+                    fadeIn.restart()
                 }
 
                 NumberAnimation {
                     id: fadeIn
+                    property int revision: -1
                     property: "opacity"
                     from: 0; to: 1
                     duration: 420
                     easing.type: Easing.OutCubic
                     onFinished: {
+                        if (fadeIn.revision !== wallWindow.revision || fadeIn.target !== wallWindow.back || wallWindow.back.status !== Image.Ready) return
                         const old = wallWindow.front
-                        wallWindow.front = wallWindow.back
+                        wallWindow.front = fadeIn.target
                         wallWindow.back = old
                         old.opacity = 0
                         old.source = ""
@@ -463,10 +536,14 @@ ShellRoot {
 
                     function sample(img) {
                         if (url) unloadImage(url)
+                        url = ""
+                        if (!img || img.status !== Image.Ready) return
                         url = img.source.toString()
                         if (!url) return
                         aspect = img.implicitWidth / Math.max(1, img.implicitHeight)
-                        loadImage(url)
+                        const dw = Math.max(width, height * aspect), dh = dw / aspect
+                        loadImage(url, Qt.size(Math.ceil(dw), Math.ceil(dh)))
+                        if (isImageLoaded(url)) requestPaint()
                     }
                     onImageLoaded: requestPaint()
                     onPaint: {
@@ -487,23 +564,25 @@ ShellRoot {
 
                 Image {
                     id: imgA
+                    property int revision: -1
                     anchors.fill: parent
                     fillMode: Image.PreserveAspectCrop
                     sourceSize { width: wallWindow.width; height: wallWindow.height }
                     asynchronous: true
                     opacity: 0
                     z: wallWindow.back === imgA ? 1 : 0
-                    onStatusChanged: if (status === Image.Ready && wallWindow.back === imgA) { fadeIn.target = imgA; fadeIn.restart() }
+                    onStatusChanged: wallWindow.fadeReady(imgA)
                 }
                 Image {
                     id: imgB
+                    property int revision: -1
                     anchors.fill: parent
                     fillMode: Image.PreserveAspectCrop
                     sourceSize { width: wallWindow.width; height: wallWindow.height }
                     asynchronous: true
                     opacity: 0
                     z: wallWindow.back === imgB ? 1 : 0
-                    onStatusChanged: if (status === Image.Ready && wallWindow.back === imgB) { fadeIn.target = imgB; fadeIn.restart() }
+                    onStatusChanged: wallWindow.fadeReady(imgB)
                 }
             }
 
@@ -515,10 +594,19 @@ ShellRoot {
                 id: dropdown
                 property string open: ""   // "", "calendar", "audio", "network", "notifications", "tray" or "media"
                 function toggle(name) { open = (open === name) ? "" : name }
+                // cards drop under the module that opened them (centered, kept on screen)
+                property real anchorX: -1
+                function toggleAt(name, item) {
+                    if (open !== name) anchorX = item.mapToItem(null, item.width / 2, 0).x
+                    toggle(name)
+                }
+                function cardX(w) {
+                    return anchorX < 0 ? width - w - 10 : Math.max(10, Math.min(width - w - 10, anchorX - w / 2))
+                }
                 Connections {
                     target: root
                     function onMediaCardRequestChanged() {
-                        if (bar.screen.name === Hyprland.focusedMonitor?.name) dropdown.open = "media"
+                        if (bar.screen.name === Hyprland.focusedMonitor?.name && dropdown.open !== "media") dropdown.toggleAt("media", mediaButton)
                     }
                 }
 
@@ -529,8 +617,10 @@ ShellRoot {
                 exclusionMode: ExclusionMode.Ignore
                 WlrLayershell.layer: WlrLayer.Overlay
                 WlrLayershell.namespace: "gilgamesh-dropdown"
-                // the media card has a text box (download link); other cards don't need the keyboard
-                WlrLayershell.keyboardFocus: open === "media" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+                // only the media card's library has text boxes (search, download link); other cards and
+                // the now-playing view don't need the keyboard (with it, clicks outside didn't close the card)
+                WlrLayershell.keyboardFocus: open === "media" && mediaCard.mode === "library"
+                    ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
                 color: "transparent"
 
                 MouseArea { anchors.fill: parent; onClicked: dropdown.open = "" }
@@ -610,9 +700,8 @@ ShellRoot {
                 Item {
                     id: audioPanel
                     visible: dropdown.open === "audio"
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    y: 6
+                                                            x: dropdown.cardX(width)
+                                                            y: 6
                     width: 380
                     height: panelCol.implicitHeight + 32
                     MouseArea { anchors.fill: parent } // clicks on the card don't close it
@@ -650,12 +739,16 @@ ShellRoot {
                             spacing: 18
 
                             Repeater {
-                                model: [
-                                    { title: "Output", isOutput: true,  node: Pipewire.defaultAudioSink,   devices: audioPanel.sinks,
-                                      accent: root.cyan,   icon: 0xF057E, mutedIcon: 0xF075F },
-                                    { title: "Input",  isOutput: false, node: Pipewire.defaultAudioSource, devices: audioPanel.sources,
-                                      accent: root.purple, icon: 0xF036C, mutedIcon: 0xF036D }
-                                ]
+                                model: ScriptModel {
+                                    objectProp: "isOutput"
+                                    comparisonMode: ObjectComparison.Identity
+                                    values: [
+                                        { title: "Output", isOutput: true,  node: Pipewire.defaultAudioSink,   devices: audioPanel.sinks,
+                                          accent: root.cyan,   icon: 0xF057E, mutedIcon: 0xF075F },
+                                        { title: "Input",  isOutput: false, node: Pipewire.defaultAudioSource, devices: audioPanel.sources,
+                                          accent: root.purple, icon: 0xF036C, mutedIcon: 0xF036D }
+                                    ]
+                                }
 
                                 ColumnLayout {
                                     id: section
@@ -731,7 +824,7 @@ ShellRoot {
 
                                     // devices: the current one is marked, click another to switch
                                     Repeater {
-                                        model: section.modelData.devices
+                                        model: ScriptModel { values: section.modelData.devices; comparisonMode: ObjectComparison.Identity }
 
                                         Rectangle {
                                             id: deviceRow
@@ -789,9 +882,8 @@ ShellRoot {
                 Item {
                     id: networkCard
                     visible: dropdown.open === "network"
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    y: 6
+                                                            x: dropdown.cardX(width)
+                                                            y: 6
                     width: 380
                     height: netCol.implicitHeight + 32
                     MouseArea { anchors.fill: parent } // clicks on the card don't close it
@@ -799,14 +891,16 @@ ShellRoot {
                     readonly property var providers: ["DHCP", "Cloudflare", "Google", "OpenDNS", "Custom"]
                     property string dns: ""        // what gilgamesh-dns reports
                     property string pending: ""    // being applied right now
+                    property string dnsError: ""
                     property string ip: ""
 
                     function refresh() {
                         dnsRead.running = true
-                        if (root.netDevice) { ipRead.command = ["sh", "-c", "ip -4 -o addr show dev " + root.netDevice.name + " | awk '{print $4}' | head -1"]; ipRead.running = true }
+                        if (root.netDevice) { ipRead.command = ["sh", "-c", "ip -4 -o addr show dev \"$1\" | awk '{print $4}' | head -1", "sh", root.netDevice.name]; ipRead.running = true }
                     }
                     function setDns(p) {
                         if (pending !== "") return
+                        dnsError = ""
                         pending = p
                         dnsSet.command = p === "Custom"
                             ? ["foot", "--app-id", "gilgamesh-dns", "-e", "gilgamesh-dns", "Custom"]
@@ -819,8 +913,20 @@ ShellRoot {
                         stdout: StdioCollector { onStreamFinished: networkCard.dns = this.text.trim() } }
                     Process { id: ipRead
                         stdout: StdioCollector { onStreamFinished: networkCard.ip = this.text.trim() } }
-                    Process { id: dnsSet
-                        onExited: { networkCard.pending = ""; dnsRead.running = true } }
+                    Process {
+                        id: dnsSet
+                        onRunningChanged: {
+                            if (!running && networkCard.pending !== "") {
+                                networkCard.pending = ""
+                                networkCard.dnsError = "Could not start " + command[0] + ". Check that it is installed."
+                            }
+                        }
+                        onExited: exitCode => {
+                            networkCard.pending = ""
+                            if (exitCode !== 0) networkCard.dnsError = "DNS change failed (exit " + exitCode + ")."
+                            dnsRead.running = true
+                        }
+                    }
 
                     Rectangle {
                         anchors.fill: parent
@@ -905,6 +1011,14 @@ ShellRoot {
                                     }
                                 }
                             }
+                            Text {
+                                visible: networkCard.dnsError !== ""
+                                Layout.fillWidth: true
+                                text: networkCard.dnsError
+                                wrapMode: Text.Wrap
+                                color: root.red
+                                font { family: root.font; pixelSize: root.fontSize - 2 }
+                            }
                         }
                     }
                 }
@@ -953,7 +1067,7 @@ ShellRoot {
                     function clean(t) { return String(t ?? "").replace(/_(?!_)/g, "").replace(/__/g, "_") } // drop "_" mnemonics
                     onVisibleChanged: if (!visible) reset()
 
-                    QsMenuOpener { id: rootOpener; menu: trayMenu.item?.menu ?? null }
+                    QsMenuOpener { id: rootOpener; menu: trayMenu.visible ? (trayMenu.item?.menu ?? null) : null }
                     Component { id: openerComponent; QsMenuOpener {} }
                     Timer { id: settleTimer; interval: 250; onTriggered: trayMenu.settling = false }
 
@@ -1083,17 +1197,15 @@ ShellRoot {
                     id: mediaCard
                     shell: root
                     visible: dropdown.open === "media"
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    y: 6
+                                                            x: dropdown.cardX(width)
+                                                            y: 6
                 }
 
                 Item {
                     id: notifCenter
                     visible: dropdown.open === "notifications"
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    y: 6
+                                                            x: dropdown.cardX(width)
+                                                            y: 6
                     width: 400
                     height: centerCol.implicitHeight + 32
                     MouseArea { anchors.fill: parent } // clicks on the card don't close it
@@ -1176,7 +1288,7 @@ ShellRoot {
                                     spacing: 8
 
                                     Repeater {
-                                        model: root.history
+                                        model: ScriptModel { values: root.history; comparisonMode: ObjectComparison.Identity }
                                         Rectangle {
                                             id: hRow
                                             required property var modelData
@@ -1269,7 +1381,10 @@ ShellRoot {
                     spacing: 8
 
                     Repeater {
-                        model: root.popups
+                        model: ScriptModel {
+                            values: root.popups
+                            comparisonMode: ObjectComparison.Identity
+                        }
 
                         Rectangle {
                             id: toast
@@ -1401,20 +1516,22 @@ ShellRoot {
                 anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
                 spacing: 14
 
-                // media: what's playing. click = media card, middle click = play/pause, scroll = next/previous
+                // media: what's playing. click = media card, middle click = play/pause, scroll = next/previous.
+                // Nothing playing: just a music note, and the card opens on the local library.
                 Item {
-                    visible: root.media !== null
+                    id: mediaButton
                     implicitWidth: mediaRow.implicitWidth
                     implicitHeight: mediaRow.implicitHeight
                     RowLayout {
                         id: mediaRow
                         spacing: 6
                         Text {
-                            text: root.icon(root.media?.isPlaying ? 0xF03E4 : 0xF040A)
+                            text: root.icon(!root.media ? 0xF075A : root.media.isPlaying ? 0xF03E4 : 0xF040A)
                             color: root.green
                             font { family: root.iconFont; pixelSize: root.fontSize + 2 }
                         }
                         Text {
+                            visible: root.media !== null
                             Layout.maximumWidth: 280
                             // \u200E (left-to-right mark): an Arabic/Hebrew title would otherwise flip the
                             // whole line right-to-left, cutting it on the wrong side
@@ -1432,7 +1549,7 @@ ShellRoot {
                         property real lastWheel: 0
                         onClicked: mouse => {
                             if (mouse.button === Qt.MiddleButton) root.media?.togglePlaying()
-                            else dropdown.toggle("media")
+                            else dropdown.toggleAt("media", parent)
                         }
                         onWheel: wheel => {
                             // one skip per gesture: touchpads send many small wheel events
@@ -1487,7 +1604,7 @@ ShellRoot {
                     MouseArea {
                         anchors.fill: parent; anchors.margins: -4
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: dropdown.toggle("notifications")
+                        onClicked: dropdown.toggleAt("notifications", parent)
                     }
                 }
 
@@ -1520,7 +1637,7 @@ ShellRoot {
                     MouseArea {
                         anchors.fill: parent; anchors.margins: -4
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: dropdown.toggle("network")
+                        onClicked: dropdown.toggleAt("network", parent)
                     }
                 }
 
@@ -1539,7 +1656,7 @@ ShellRoot {
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                         onClicked: mouse => {
                             if (mouse.button === Qt.MiddleButton) { if (root.source) root.source.muted = !root.source.muted }
-                            else dropdown.toggle("audio")
+                            else dropdown.toggleAt("audio", parent)
                         }
                         onWheel: wheel => {
                             if (!root.source) return
@@ -1564,7 +1681,7 @@ ShellRoot {
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                         onClicked: mouse => {
                             if (mouse.button === Qt.MiddleButton) { if (root.sink) root.sink.muted = !root.sink.muted }
-                            else dropdown.toggle("audio")
+                            else dropdown.toggleAt("audio", parent)
                         }
                         onWheel: wheel => {
                             if (!root.sink) return

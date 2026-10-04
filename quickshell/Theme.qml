@@ -16,11 +16,13 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
 import QtQuick
+import "Paths.js" as Paths
+import "Wallpaper.js" as Wallpaper
 
 Scope {
     id: theme
     required property var shell
-    readonly property string dir: Qt.resolvedUrl("themes").toString().replace("file://", "")
+    readonly property string dir: Paths.fromFileUrl(Qt.resolvedUrl("themes"))
     readonly property string name: shell.prefs.theme || "jellybeans"
     readonly property string outDir: shell.stateDir + "/theme"
     // the shared prompt config: the repo's fish/starship.toml next to this folder (the bar's
@@ -30,8 +32,8 @@ Scope {
     Process {
         running: true
         command: ["sh", "-c", "d=$(readlink -f \"$1\"); for f in \"$d/../fish/starship.toml\" \"$d/../starship.toml\"; do [ -f \"$f\" ] && { readlink -f \"$f\"; exit; }; done; echo \"${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml\"",
-                  "sh", Qt.resolvedUrl(".").toString().replace("file://", "")]
-        stdout: StdioCollector { onStreamFinished: theme.starshipBase = this.text.trim() }
+                  "sh", Paths.fromFileUrl(Qt.resolvedUrl("."))]
+        stdout: StdioCollector { onStreamFinished: theme.starshipBase = this.text.replace(/\n$/, "") }
     }
 
     property var c: ({})          // current palette: key -> "#rrggbb"
@@ -63,77 +65,109 @@ Scope {
 
     // ---------- loading ----------
     function parse(text) {
-        const out = {}
+        const out = Object.create(null)
         for (const line of text.split("\n")) {
             const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)"/)
-            if (m) out[m[1]] = m[2]
+            if (!m || m[1] === "mode") continue
+            if (!/^#[0-9A-Fa-f]{6}$/.test(m[2])) return null
+            out[m[1]] = m[2]
         }
-        return out
+        return out.background && out.foreground ? out : null
     }
-
     FileView {
-        id: current
         path: theme.dir + "/" + theme.name + "/colors.toml"
         watchChanges: true
-        onFileChanged: reload()
-        onLoaded: {
-            theme.c = theme.parse(text())
-            theme.writeFiles()
-            if (theme.switching) { theme.switching = false; theme.applyLive() }
-        }
+        onFileChanged: theme.refresh()
     }
 
-    // all palettes, for the previews, and how many wallpapers each theme has
-    property var wallCounts: ({})   // name -> number of backgrounds
-    function refresh() { lister.running = true; counter.running = true }
+    property var wallCounts: ({})
+    property bool catalogReady: false
+    property string error: ""
+    function refresh() {
+        if (!lister.running) { lister.pending = true; lister.running = true }
+        counter.running = true
+    }
     Process {
         id: counter
-        command: ["sh", "-c", "for d in \"$1\"/*/; do n=$(find \"$d/backgrounds\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \\) 2>/dev/null | wc -l); echo \"$(basename \"$d\") $n\"; done", "sh", theme.dir]
+        command: ["sh", "-c", "for d in \"$1\"/*/; do n=$(find \"$d/backgrounds\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \\) -printf x 2>/dev/null | wc -c); base=${d%/}; printf '%s\\0%s\\0' \"${base##*/}\" \"$n\"; done", "sh", theme.dir]
         stdout: StdioCollector {
             onStreamFinished: {
-                const m = {}
-                for (const line of this.text.trim().split("\n")) {
-                    const [k, n] = line.split(" ")
-                    if (k && Number(n) > 0) m[k] = Number(n)
-                }
-                theme.wallCounts = m
+                const m = Object.create(null), fields = this.text.split("\0")
+                for (let i = 0; i + 1 < fields.length; i += 2)
+                    if (fields[i] && Number(fields[i + 1]) > 0) m[fields[i]] = Number(fields[i + 1])
+                if (JSON.stringify(m) !== JSON.stringify(theme.wallCounts)) theme.wallCounts = m
             }
         }
     }
     Component.onCompleted: refresh()
     Process {
         id: lister
-        command: ["sh", "-c", "for f in \"$1\"/*/colors.toml; do echo \"@@$(basename \"$(dirname \"$f\")\")\"; cat \"$f\"; done", "sh", theme.dir]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const all = {}
-                for (const chunk of this.text.split("@@").slice(1)) {
-                    const nl = chunk.indexOf("\n")
-                    all[chunk.slice(0, nl).trim()] = theme.parse(chunk.slice(nl + 1))
-                }
-                theme.palettes = all
+        property bool pending: false
+        command: ["sh", "-c", "for f in \"$1\"/*/colors.toml; do [ -f \"$f\" ] || continue; d=${f%/colors.toml}; printf '%s\\0' \"${d##*/}\"; cat \"$f\" || exit 1; printf '\\0'; done", "sh", theme.dir]
+        stdout: StdioCollector { id: catalogOutput }
+        onExited: (code, status) => {
+            pending = false
+            if (code !== 0 || status !== 0) { theme.catalogReady = false; theme.error = "Could not load themes."; return }
+            const all = Object.create(null), fields = catalogOutput.text.split("\0")
+            for (let i = 0; i + 1 < fields.length; i += 2) {
+                const palette = theme.parse(fields[i + 1])
+                if (palette) all[fields[i]] = palette
             }
+            if (JSON.stringify(all) !== JSON.stringify(theme.palettes)) theme.palettes = all
+            theme.catalogReady = true
+            if (!theme.transaction && !theme.pendingTheme && Object.prototype.hasOwnProperty.call(all, theme.name)
+                    && JSON.stringify(theme.c) !== JSON.stringify(all[theme.name]))
+                theme.requestTheme(theme.name, false)
+        }
+        onRunningChanged: if (!running && pending) {
+            pending = false
+            theme.catalogReady = false
+            theme.error = "Could not load themes."
         }
     }
 
-    // ---------- switching ----------
-    property bool switching: false
+    // One captured palette owns the writes and restart until restoration finishes.
+    property var transaction: null
+    property var pendingTheme: null
+    property int themeRevision: 0
+    property string phase: ""
     function set(newName) {
-        if (!palettes[newName] && Object.keys(palettes).length > 0) return false
-        if (newName === name) { applyLive(); return true }
-        switching = true
-        shell.prefs.theme = newName    // -> new colors.toml loads -> writeFiles + applyLive
+        if (!catalogReady || !Object.prototype.hasOwnProperty.call(palettes, newName)) return false
+        requestTheme(newName, true)
         return true
     }
-
-    // what changes right away: open terminals, open shells, the wallpaper, Nautilus
+    function requestTheme(newName, liveApply) {
+        pendingTheme = { name: newName, live: liveApply, revision: wallpaperRevision, id: ++themeRevision }
+        Qt.callLater(startTheme)
+    }
+    function startTheme() {
+        if (transaction || !pendingTheme || !gtk4In.loaded || !gtk3In.loaded || !starshipIn.loaded) return
+        const next = pendingTheme
+        pendingTheme = null
+        if (!catalogReady || !Object.prototype.hasOwnProperty.call(palettes, next.name)) return
+        transaction = { name: next.name, palette: Object.assign({}, palettes[next.name]),
+                        live: next.live, revision: next.revision, id: next.id }
+        error = ""
+        phase = "writing"
+        writeFiles()
+    }
+    function finishTheme(message) {
+        if (message) { error = message; console.warn(message) }
+        phase = ""
+        transaction = null
+        if (!pendingTheme && !message && catalogReady && Object.prototype.hasOwnProperty.call(palettes, name)
+                && JSON.stringify(c) !== JSON.stringify(palettes[name])) requestTheme(name, false)
+        Qt.callLater(startTheme)
+        Qt.callLater(ensureWallpaper)
+    }
     function applyLive() {
-        live.running = false
+        phase = "live"
+        live.command = ["sh", "-c", live.script, "sh", osc(), transaction.name]
         live.running = true
-        walls.running = false
-        walls.running = true
-        nautilusWindows.running = false
-        nautilusWindows.running = true
+        pendingWalls = { name: transaction.name, folder: dir + "/" + transaction.name + "/backgrounds",
+                         revision: transaction.revision, id: transaction.id, keepCurrent: false,
+                         current: shell.prefs.wallpaper, remembered: rememberedWallpaper(transaction.name) }
+        startWalls()
     }
 
     // ---------- Nautilus: restarted in the new theme, every window back where it was ----------
@@ -149,80 +183,183 @@ Scope {
     function folderTitle(uri) {
         if (uri.startsWith("trash:")) return "Trash"
         if (uri.startsWith("recent:")) return "Recent"
-        if (!uri.startsWith("file://")) return ""
-        const path = decodeURIComponent(uri.slice(7)).replace(/\/+$/, "")
+        const path = Paths.fromFileUrl(uri).replace(/\/+$/, "")
+        if (!path) return uri === "file:///" ? "/" : ""
         if (path === shell.home) return "Home"
-        return path ? path.slice(path.lastIndexOf("/") + 1) : "/"
+        return path.slice(path.lastIndexOf("/") + 1)
     }
-
+    function locations(text) {
+        const result = JSON.parse(text)
+        if (result.type !== "a{sas}" || !result.data || Array.isArray(result.data)
+                || typeof result.data !== "object") throw new Error("Invalid locations")
+        for (const key of Object.keys(result.data)) {
+            const list = result.data[key]
+            // Do not close windows whose tabs cannot all be restored by this code.
+            if (!Array.isArray(list) || list.length !== 1 || typeof list[0] !== "string"
+                    || !folderTitle(list[0])) throw new Error("Unrecoverable location")
+        }
+        return result.data
+    }
+    function snapshot(text) {
+        const parts = text.split("\0")
+        if (parts.length !== 2) throw new Error("Incomplete snapshot")
+        const locs = locations(parts[0]), clients = JSON.parse(parts[1])
+        if (!Array.isArray(clients)) throw new Error("Invalid windows")
+        const wins = clients.filter(c => isFiles(c.class))
+        const uris = Object.values(locs).map(l => l[0])
+        if (wins.length !== uris.length || wins.length === 0) throw new Error("Incomplete locations")
+        const pair = v => Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)
+        const queue = []
+        for (const uri of uris) {
+            const title = folderTitle(uri)
+            if (uris.some(u => u !== uri && folderTitle(u) === title)) throw new Error("Ambiguous titles")
+            const i = wins.findIndex(w => w.title === title)
+            if (i < 0) throw new Error("Missing window")
+            const w = wins.splice(i, 1)[0]
+            if (!w.workspace || typeof w.workspace.name !== "string" || !pair(w.at) || !pair(w.size)
+                    || typeof w.floating !== "boolean" || !Number.isInteger(w.fullscreen))
+                throw new Error("Invalid placement")
+            queue.push({ uri: uri, w: { ws: w.workspace.name, floating: w.floating,
+                        fullscreen: w.fullscreen, at: w.at, size: w.size } })
+        }
+        return queue
+    }
+    readonly property string locationCommand: "busctl --user --json=short get-property org.freedesktop.FileManager1 /org/freedesktop/FileManager1 org.freedesktop.FileManager1 OpenWindowsWithLocations"
     Process {
         id: nautilusWindows
-        command: ["sh", "-c", "pgrep -x nautilus >/dev/null || pgrep -x .nautilus-wrapp >/dev/null || exit 0; "
-            + "busctl --user --json=short get-property org.freedesktop.FileManager1 /org/freedesktop/FileManager1 "
-            + "org.freedesktop.FileManager1 OpenWindowsWithLocations 2>/dev/null || echo '{}'; echo '@@'; hyprctl clients -j"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const out = this.text.trim()
-                if (!out) return     // not running
-                const parts = out.split("@@")
-                let uris = [], wins = []
-                try { uris = Object.values(JSON.parse(parts[0]).data || {}).map(l => l[0]).filter(u => u) } catch (e) {}
-                try {
-                    wins = JSON.parse(parts[1]).filter(c => theme.isFiles(c.class)).map(c => ({
-                        title: c.title, ws: c.workspace.name, floating: c.floating,
-                        fullscreen: c.fullscreen || 0, at: c.at, size: c.size }))
-                } catch (e) {}
-                // pair each folder with its window by title now, while the titles are right
-                const queue = uris.map(u => ({ uri: u, w: null }))
-                for (const q of queue) {
-                    const i = wins.findIndex(w => w.title === theme.folderTitle(q.uri))
-                    if (i >= 0) q.w = wins.splice(i, 1)[0]
-                }
-                for (const q of queue) if (!q.w && wins.length > 0) q.w = wins.shift()
-                theme.nautilusQueue = queue
-                theme.nautilusTiled = []
-                nautilusQuit.running = true
+        command: ["sh", "-c", "pgrep -x nautilus >/dev/null || pgrep -x .nautilus-wrapp >/dev/null || exit 3; "
+            + "locations=$(" + theme.locationCommand + ") || exit 1; clients=$(hyprctl clients -j) || exit 1; printf '%s\\0%s' \"$locations\" \"$clients\""]
+        stdout: StdioCollector { id: snapshotOutput }
+        onExited: (code, status) => {
+            if (code === 3 && status === 0) { theme.finishTheme(""); return }
+            try {
+                if (code !== 0 || status !== 0) throw new Error("Snapshot failed")
+                theme.nautilusQueue = theme.snapshot(snapshotOutput.text)
+            } catch (e) {
+                theme.finishTheme("Theme applied; Files was left open because its locations could not be safely recovered.")
+                return
             }
+            theme.nautilusTiled = []
+            theme.phase = "quitting"
+            nautilusQuit.running = true
         }
+        onRunningChanged: if (!running && theme.phase === "snapshot")
+            theme.finishTheme("Theme applied; could not snapshot Files. Its windows were left open.")
     }
     Process {
         id: nautilusQuit
         command: ["sh", "-c", `
-            nautilus -q
+            nautilus -q || exit 1
             for i in $(seq 50); do
-              pgrep -x nautilus >/dev/null || pgrep -x .nautilus-wrapp >/dev/null || break
+              pgrep -x nautilus >/dev/null || pgrep -x .nautilus-wrapp >/dev/null || exit 0
               sleep 0.1
-            done`]
-        onExited: theme.openNextFolder()
+            done
+            exit 1`]
+        onExited: (code, status) => {
+            if (code === 0 && status === 0) { theme.knownLocations = {}; theme.openNextFolder() }
+            else theme.stopRestore("Files did not exit; automatic restoration stopped.")
+        }
+        onRunningChanged: if (!running && theme.phase === "quitting")
+            theme.stopRestore("Could not restart Files.")
     }
-    Process { id: nautilusOpen }
+    property var knownLocations: ({})
+    property var candidateAddresses: []
+    property bool restoreBlocked: false
+    function stopRestore(message) {
+        openTimeout.stop()
+        correlationTimer.stop()
+        nautilusOpening = null
+        restoreBlocked = true
+        // Retain the unprocessed queue for diagnosis; never mistake a late window for the next one.
+        phase = "settling"
+        error = message
+        settleRestore()
+    }
+    function settleRestore() {
+        if (phase !== "settling" || nautilusOpening || correlationProbe.running || nautilusOpen.running
+                || tiledFix.running || tiledProbe.running) return
+        finishTheme(error)
+    }
+    Process {
+        id: nautilusOpen
+        onExited: (code, status) => {
+            if (code !== 0 || status !== 0) theme.stopRestore("Could not reopen a Files window.")
+            else if (theme.phase === "settling") Qt.callLater(theme.settleRestore)
+        }
+        onRunningChanged: if (!running) Qt.callLater(theme.settleRestore)
+    }
     function openNextFolder() {
-        if (nautilusQueue.length === 0) { nautilusOpening = null; return }
+        if (nautilusQueue.length === 0) {
+            nautilusOpening = null
+            phase = "settling"
+            settleRestore()
+            return
+        }
+        phase = "opening"
         nautilusOpening = nautilusQueue[0]
-        nautilusQueue = nautilusQueue.slice(1)
+        candidateAddresses = []
         nautilusOpen.command = ["sh", "-c", "nautilus --new-window \"$1\" >/dev/null 2>&1 &", "sh", nautilusOpening.uri]
         nautilusOpen.running = true
         openTimeout.restart()
     }
-    Timer { id: openTimeout; interval: 5000; onTriggered: theme.openNextFolder() }   // never showed up: go on
-
-    // the window of the folder we just opened, the moment Hyprland maps it
+    Timer {
+        id: openTimeout
+        interval: 5000
+        onTriggered: theme.stopRestore("A Files window could not be identified. Automatic restarts are disabled until the bar is reloaded.")
+    }
     Connections {
         target: Hyprland
         enabled: theme.nautilusOpening !== null
         function onRawEvent(event) {
-            if (event.name !== "openwindow") return
-            const args = event.parse(4)   // address, workspace, class, title
-            if (!theme.isFiles(args[2]) || !theme.nautilusOpening) return
-            openTimeout.stop()
-            if (theme.nautilusOpening.w) theme.placeWindow("0x" + args[0], theme.nautilusOpening.w)
-            theme.openNextFolder()
+            if (event.name !== "openwindow" || !theme.nautilusOpening) return
+            const args = event.parse(4)
+            if (!theme.isFiles(args[2]) || !/^[0-9a-fA-F]+$/.test(args[0])) return
+            theme.candidateAddresses = theme.candidateAddresses.concat(["0x" + args[0]])
+            correlationTimer.restart()
         }
+    }
+    Timer {
+        id: correlationTimer
+        interval: 100
+        onTriggered: if (theme.nautilusOpening && !correlationProbe.running) correlationProbe.running = true
+    }
+    Process {
+        id: correlationProbe
+        command: ["sh", "-c", "locations=$(" + theme.locationCommand + ") || exit 1; clients=$(hyprctl clients -j) || exit 1; printf '%s\\0%s' \"$locations\" \"$clients\""]
+        stdout: StdioCollector { id: correlationOutput }
+        onExited: (code, status) => {
+            const opening = theme.nautilusOpening
+            if (!opening) { Qt.callLater(theme.settleRestore); return }
+            try {
+                if (code !== 0 || status !== 0) throw new Error("Probe failed")
+                const parts = correlationOutput.text.split("\0"), locs = theme.locations(parts[0])
+                const added = Object.keys(locs).filter(k => !Object.prototype.hasOwnProperty.call(theme.knownLocations, k))
+                const clients = JSON.parse(parts[1]).filter(c => theme.candidateAddresses.includes(c.address)
+                    && theme.isFiles(c.class) && c.title === theme.folderTitle(opening.uri))
+                if (added.length !== 1 || locs[added[0]][0] !== opening.uri || clients.length !== 1)
+                    throw new Error("Window not uniquely identified")
+                openTimeout.stop()
+                correlationTimer.stop()
+                theme.placeWindow(clients[0].address, opening.w)
+                theme.knownLocations = locs
+                theme.nautilusQueue = theme.nautilusQueue.slice(1)
+                theme.nautilusOpening = null
+                Qt.callLater(theme.openNextFolder)
+            } catch (e) { correlationTimer.restart() }
+        }
+        onRunningChanged: if (!running && theme.phase === "settling") Qt.callLater(theme.settleRestore)
+    }
+    function luaString(value) {
+        return '"' + String(value).replace(/[\\"\x00-\x1f\x7f]/g, ch => {
+            if (ch === '\\') return '\\\\'
+            if (ch === '"') return '\\"'
+            return '\\' + String(ch.charCodeAt(0)).padStart(3, "0")
+        }) + '"'
     }
     function dsp(cmd) { Hyprland.dispatch(cmd) }
     function placeWindow(addr, w) {
         const win = 'window = "address:' + addr + '"'
-        dsp('hl.dsp.window.move({ ' + win + ', workspace = "' + String(w.ws).replace(/"/g, '\\"') + '", follow = false })')
+        dsp('hl.dsp.window.move({ ' + win + ', workspace = ' + luaString(w.ws) + ', follow = false })')
         if (w.floating) {
             dsp('hl.dsp.window.float({ ' + win + ', action = "set" })')
             dsp('hl.dsp.window.resize({ ' + win + ', x = ' + w.size[0] + ', y = ' + w.size[1] + ' })')
@@ -237,16 +374,27 @@ Scope {
 
     // tiled windows: once Hyprland has laid them out, swap each into the spot it had
     // (with whatever window sits there now) and give it its old split size back
-    Timer { id: tiledFix; interval: 350; onTriggered: { tiledProbe.running = false; tiledProbe.running = true } }
+    Timer {
+        id: tiledFix
+        interval: 350
+        onTriggered: {
+            if (tiledProbe.running) { restart(); return }
+            tiledProbe.windows = theme.nautilusTiled
+            theme.nautilusTiled = []
+            tiledProbe.running = true
+        }
+    }
     Process {
         id: tiledProbe
+        property var windows: []
+        onRunningChanged: if (!running && theme.phase === "settling") Qt.callLater(theme.settleRestore)
         command: ["hyprctl", "clients", "-j"]
         stdout: StdioCollector {
             onStreamFinished: {
                 let clients = []
                 try { clients = JSON.parse(this.text) } catch (e) { return }
                 const same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1]
-                for (const t of theme.nautilusTiled) {
+                for (const t of tiledProbe.windows) {
                     const me = clients.find(c => c.address === t.addr)
                     if (!me) continue
                     const win = 'window = "address:' + t.addr + '"'
@@ -258,7 +406,7 @@ Scope {
                     if (!same(me.size, t.w.size))
                         theme.dsp('hl.dsp.window.resize({ ' + win + ', x = ' + t.w.size[0] + ', y = ' + t.w.size[1] + ' })')
                 }
-                theme.nautilusTiled = []
+                tiledProbe.windows = []
             }
         }
     }
@@ -266,7 +414,7 @@ Scope {
         id: live
         // foot: write the colors as escape codes into every open foot window's terminal.
         // fish: setting the universal variable makes every open shell reload its colors.
-        command: ["sh", "-c", `
+        property string script: `
             osc="$1"
             for foot in $(pgrep -x foot); do
               for child in $(pgrep -P "$foot"); do
@@ -274,8 +422,15 @@ Scope {
                 case "$tty" in /dev/pts/*) printf '%b' "$osc" > "$tty" ;; esac
               done
             done
-            command -v fish >/dev/null && fish -c "set -U gilgamesh_theme $2"
-        `, "sh", theme.osc(), theme.name]
+            command -v fish >/dev/null && fish -c 'set -U gilgamesh_theme "$argv[1]"' -- "$2"
+        `
+        onExited: (code, status) => {
+            if (code !== 0 || status !== 0) { theme.finishTheme("Theme files saved, but live terminal updates failed."); return }
+            if (theme.restoreBlocked) { theme.finishTheme("Theme applied; Files restart remains disabled after an uncertain restore."); return }
+            theme.phase = "snapshot"
+            nautilusWindows.running = true
+        }
+        onRunningChanged: if (!running && theme.phase === "live") theme.finishTheme("Could not apply the theme live.")
     }
     function osc() {
         const k = (key, fb) => c[key] || c[fb] || ""
@@ -286,8 +441,8 @@ Scope {
         return s
     }
     // the 16 terminal colors, like Omarchy's templates
-    function terminalColors() {
-        const k = (key, fb) => c[key] || c[fb] || "#888888"
+    function terminalColors(palette = c) {
+        const k = (key, fb) => palette[key] || palette[fb] || "#888888"
         return [k("background"), k("red"), k("green"), k("yellow"), k("blue"), k("magenta"), k("cyan"), k("foreground"),
                 k("muted"), k("bright_red", "red"), k("bright_green", "green"), k("bright_yellow", "yellow"),
                 k("bright_blue", "blue"), k("bright_magenta", "magenta"), k("bright_cyan", "cyan"), k("bright_foreground", "foreground")]
@@ -296,66 +451,138 @@ Scope {
     // the theme's wallpapers (themes/<name>/backgrounds): switching sets the wallpaper you last
     // picked with this theme, or its first one. (Your own folder, prefs.wallpaperFolder, stays.)
     readonly property string wallsDir: dir + "/" + name + "/backgrounds"
+    property int wallpaperRevision: 0
+    property var pendingWalls: null
+    function rememberedWallpaper(themeName) { return (shell.prefs.themeWallpapers || {})[themeName] || "" }
+    function wallpaperBusy() {
+        // Startup palette writes may wait for templates; they do not choose a wallpaper.
+        return (pendingTheme && (pendingTheme.live || pendingTheme.name !== name))
+            || (transaction && (transaction.live || transaction.name !== name))
+    }
+    // Wait for preferences before selecting a first-run default. Share the theme-switch queue
+    // and revisions so a late scan cannot replace a newer theme or a manual wallpaper pick.
+    function ensureWallpaper() {
+        if (!shell.prefsReady || wallpaperBusy() || (pendingWalls && !pendingWalls.keepCurrent)) return
+        pendingWalls = { name: name, folder: wallsDir, revision: wallpaperRevision, id: themeRevision,
+                         keepCurrent: true, current: shell.prefs.wallpaper, remembered: rememberedWallpaper(name) }
+        startWalls()
+    }
+    onNameChanged: Qt.callLater(ensureWallpaper)
+    function startWalls() {
+        if (walls.request || !pendingWalls) return
+        walls.request = pendingWalls
+        pendingWalls = null
+        walls.command = Wallpaper.scanCommand(dir, walls.request)
+        walls.running = true
+    }
     Process {
         id: walls
-        command: ["sh", "-c", "find \"$1\" -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \\) 2>/dev/null | sort",
-                  "sh", theme.wallsDir]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const files = this.text.trim().split("\n").filter(f => f !== "")
-                if (files.length === 0) return
-                const picked = (theme.shell.prefs.themeWallpapers || {})[theme.name]
-                theme.shell.prefs.wallpaper = files.includes(picked) ? picked : files[0]
-            }
+        property var request: null
+        stdout: StdioCollector { id: wallsOutput }
+        onExited: (code, status) => {
+            const r = request
+            if (code === 0 && status === 0 && theme.shell.prefsReady
+                    && Wallpaper.isCurrent(r, theme.name, theme.wallpaperRevision, theme.themeRevision,
+                        r && r.keepCurrent ? theme.wallpaperBusy() : theme.pendingTheme,
+                        theme.shell.prefs.wallpaper, theme.rememberedWallpaper(theme.name))) {
+                // Only paths confirmed by -f / find -type f reach prefs and the picker.
+                theme.shell.prefs.wallpaper = Wallpaper.firstFile(wallsOutput.text)
+            } else if (r && code === 0 && status === 0) Qt.callLater(theme.ensureWallpaper)
+            request = null
+            Qt.callLater(theme.startWalls)
+        }
+        onRunningChanged: if (!running && request) {
+            request = null
+            Qt.callLater(theme.startWalls)
         }
     }
     // remember the pick: any wallpaper chosen from this theme's own folder
     Connections {
         target: theme.shell.prefs
         function onWallpaperChanged() {
+            theme.wallpaperRevision++
+            Qt.callLater(theme.ensureWallpaper)
             const w = theme.shell.prefs.wallpaper
             // by folder name, so ~/.config/quickshell/... and the repo's own path both count
             if (!w || !w.includes("/themes/" + theme.name + "/backgrounds/")) return
-            const map = Object.assign({}, theme.shell.prefs.themeWallpapers || {})
+            const map = Object.assign(Object.create(null), theme.shell.prefs.themeWallpapers || {})
             if (map[theme.name] === w) return
             map[theme.name] = w
             theme.shell.prefs.themeWallpapers = map
         }
+        function onThemeWallpapersChanged() { Qt.callLater(theme.ensureWallpaper) }
     }
 
     // ---------- theme files for other programs ----------
-    FileView { id: footOut; printErrors: false; path: theme.outDir + "/foot.ini"; blockWrites: true }
-    FileView { id: alacrittyOut; printErrors: false; path: theme.outDir + "/alacritty.toml"; blockWrites: true }
-    FileView { id: fishOut; printErrors: false; path: theme.outDir + "/colors.fish"; blockWrites: true }
-    FileView { id: fzfOut; printErrors: false; path: theme.outDir + "/fzf"; blockWrites: true }
-    FileView { id: starshipOut; printErrors: false; path: theme.outDir + "/starship.toml"; blockWrites: true }
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || shell.home + "/.config"
-    FileView { id: gtk4In; path: Qt.resolvedUrl("themed/gtk-4.0.css").toString().replace("file://", ""); onLoaded: theme.writeFiles() }
-    FileView { id: gtk3In; path: Qt.resolvedUrl("themed/gtk-3.0.css").toString().replace("file://", ""); onLoaded: theme.writeFiles() }
-    FileView { id: gtk4Out; printErrors: false; path: theme.configHome + "/gtk-4.0/gilgamesh.css"; blockWrites: true }
-    FileView { id: gtk3Out; printErrors: false; path: theme.configHome + "/gtk-3.0/gilgamesh.css"; blockWrites: true }
-    // gtk.css has to import gilgamesh.css: create it, or add the line (other CSS stays), once
+    FileView {
+        id: gtk4In
+        path: Paths.fromFileUrl(Qt.resolvedUrl("themed/gtk-4.0.css"))
+        onLoaded: Qt.callLater(theme.startTheme)
+        onLoadFailed: theme.error = "Could not read the GTK template; theme selection was not changed."
+    }
+    FileView {
+        id: gtk3In
+        path: Paths.fromFileUrl(Qt.resolvedUrl("themed/gtk-3.0.css"))
+        onLoaded: Qt.callLater(theme.startTheme)
+        onLoadFailed: theme.error = "Could not read the GTK template; theme selection was not changed."
+    }
+    FileView {
+        id: starshipIn
+        path: theme.starshipBase
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: {
+            if (!theme.transaction && !theme.pendingTheme && theme.catalogReady) theme.requestTheme(theme.name, false)
+            else Qt.callLater(theme.startTheme)
+        }
+        onLoadFailed: theme.error = "Could not read the prompt template; theme selection was not changed."
+    }
     Process {
-        id: gtkImport
-        command: ["sh", "-c", `
+        id: writer
+        // Each file is replaced atomically off the UI thread. A failed batch never applies live.
+        property string script: `
+            set -eu
+            config=$1; shift
+            tmp=
+            trap 'if [ -n "$tmp" ]; then rm -f -- "$tmp"; fi' EXIT HUP INT TERM
+            while [ "$#" -gt 0 ]; do
+              path=$1; data=$2; shift 2
+              dir=\${path%/*}
+              mkdir -p -- "$dir"
+              tmp=$(mktemp "$dir/.gilgamesh-theme.XXXXXX")
+              printf '%s' "$data" > "$tmp"
+              mv -f -- "$tmp" "$path"
+              tmp=
+            done
             line='@import url("gilgamesh.css");'
             for v in gtk-4.0 gtk-3.0; do
-              d="$1/$v"; mkdir -p "$d"
-              [ -L "$d/gtk.css" ] && [ ! -e "$d/gtk.css" ] && rm "$d/gtk.css"   # dead link
-              touch "$d/gtk.css"
-              grep -Fqx "$line" "$d/gtk.css" || printf '%s\n' "$line" >> "$d/gtk.css"
-            done`, "sh", theme.configHome]
+              path="$config/$v/gtk.css"
+              [ ! -L "$path" ] || [ -e "$path" ] || rm -- "$path"
+              touch -- "$path"
+              grep -Fqx "$line" "$path" || printf '%s\n' "$line" >> "$path"
+            done`
+        onExited: (code, status) => {
+            if (code !== 0 || status !== 0) { theme.finishTheme("Could not save theme files; selection was not changed."); return }
+            theme.c = theme.transaction.palette
+            theme.shell.prefs.theme = theme.transaction.name
+            if (theme.transaction.live) theme.applyLive()
+            else theme.finishTheme("")
+        }
+        onRunningChanged: if (!running && theme.phase === "writing")
+            theme.finishTheme("Could not start the theme writer; selection was not changed.")
     }
-    FileView { id: starshipIn; path: theme.starshipBase; watchChanges: true; onFileChanged: reload(); onLoaded: theme.writeFiles() }
 
     function writeFiles() {
-        if (!c.background) return
-        const k = (key, fb) => c[key] || c[fb] || "#888888"
+        const palette = transaction.palette
+        const output = ["sh", "-c", writer.script, "sh", configHome]
+        const save = (path, data) => { output.push(path, data) }
+        const k = (key, fb) => palette[key] || palette[fb] || "#888888"
         const x = col => col.replace("#", "")
-        const t = terminalColors()
-        const head = "# Written by the Gilgamesh bar for the theme \"" + name + "\". Don't edit, switch themes instead.\n"
+        const t = terminalColors(palette)
+        const head = "# Written by the Gilgamesh bar. Don't edit, switch themes instead.\n"
 
-        footOut.setText(head + "[colors-dark]\n"
+        save(outDir + "/foot.ini", head + "[colors-dark]\n"
             + "foreground=" + x(k("foreground")) + "\nbackground=" + x(k("background")) + "\n"
             + "selection-foreground=" + x(k("foreground")) + "\nselection-background=" + x(k("selection", "lighter_background")) + "\n"
             + "cursor=" + x(k("background")) + " " + x(k("bright_foreground", "foreground")) + "\n"
@@ -363,7 +590,7 @@ Scope {
             + t.slice(8).map((col, i) => "bright" + i + "=" + x(col)).join("\n") + "\n")
 
         const names8 = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
-        alacrittyOut.setText(head
+        save(outDir + "/alacritty.toml", head
             + "[colors.primary]\nbackground = \"" + k("background") + "\"\nforeground = \"" + k("foreground") + "\"\n\n"
             + "[colors.cursor]\ntext = \"" + k("background") + "\"\ncursor = \"" + k("bright_foreground", "foreground") + "\"\n\n"
             + "[colors.selection]\ntext = \"" + k("foreground") + "\"\nbackground = \"" + k("selection", "lighter_background") + "\"\n\n"
@@ -371,7 +598,7 @@ Scope {
             + "[colors.bright]\n" + names8.map((n, i) => n + " = \"" + t[i + 8] + "\"").join("\n") + "\n")
 
         // same roles as the original jellybeans fish colors
-        fishOut.setText(head
+        save(outDir + "/colors.fish", head
             + "set -g fish_color_normal " + x(k("foreground")) + "\n"
             + "set -g fish_color_command " + x(k("green")) + "\n"
             + "set -g fish_color_keyword " + x(k("magenta")) + "\n"
@@ -393,14 +620,14 @@ Scope {
             + "set -g fish_pager_color_progress " + x(k("blue")) + "\n"
             + "set -g fish_pager_color_selected_background --background=" + x(k("lighter_background")) + "\n")
 
-        fzfOut.setText("--color=bg:" + k("background") + ",bg+:" + k("lighter_background") + ",fg:" + k("foreground")
+        save(outDir + "/fzf", "--color=bg:" + k("background") + ",bg+:" + k("lighter_background") + ",fg:" + k("foreground")
             + ",fg+:" + k("yellow") + ",hl:" + k("red") + ",hl+:" + k("red") + ",info:" + k("blue")
             + ",marker:" + k("green") + ",prompt:" + k("yellow") + ",spinner:" + k("magenta")
             + ",pointer:" + k("red") + ",header:" + k("cyan") + ",border:" + k("red") + "\n")
 
         // Nautilus / GTK: the theme's own gtk_* colors if it has them (jellybeans does),
         // otherwise from its palette, with a colored selection from its blue like the original
-        const g = (key, val) => c["gtk_" + key] || val
+        const g = (key, val) => palette["gtk_" + key] || val
         const sel = g("sel", mix(k("blue"), k("background"), 0.45).toString())
         const gtkVars = "@define-color jb_bg " + g("bg", k("background")) + ";\n"
             + "@define-color jb_bg_alt " + g("bg_alt", k("background")) + ";\n"
@@ -411,26 +638,26 @@ Scope {
             + "@define-color jb_red " + g("red", k("red")) + ";\n"
             + "@define-color jb_orange " + g("orange", k("orange", "yellow")) + ";\n"
             + "@define-color jb_scroll " + g("scroll", k("lighter_background")) + ";\n\n"
-        const css = "/* Written by the Gilgamesh bar for the theme \"" + name + "\". Don't edit, switch themes instead. */\n"
-        if (gtk4In.text()) gtk4Out.setText(css + gtkVars + gtk4In.text())
-        if (gtk3In.text()) gtk3Out.setText(css + gtkVars + gtk3In.text())
-        gtkImport.running = true
+        const css = "/* Written by the Gilgamesh bar. Don't edit, switch themes instead. */\n"
+        save(configHome + "/gtk-4.0/gilgamesh.css", css + gtkVars + gtk4In.text())
+        save(configHome + "/gtk-3.0/gilgamesh.css", css + gtkVars + gtk3In.text())
 
         // starship: the normal config with its palette swapped for this theme's colors
         const base = starshipIn.text()
-        if (base) {
-            const palette = "[palettes.jellybeans]\n"
-                + "black = \"" + k("background") + "\"\nred = \"" + k("red") + "\"\ngreen = \"" + k("green") + "\"\n"
-                + "yellow = \"" + k("yellow") + "\"\nblue = \"" + k("blue") + "\"\npurple = \"" + k("magenta") + "\"\n"
-                + "cyan = \"" + k("cyan") + "\"\nwhite = \"" + k("foreground") + "\"\nbright_black = \"" + k("dark_foreground") + "\"\n"
-            starshipOut.setText(base.replace(/\[palettes\.jellybeans\][\s\S]*$/, palette))
-        }
+        const promptPalette = "[palettes.jellybeans]\n"
+            + "black = \"" + k("background") + "\"\nred = \"" + k("red") + "\"\ngreen = \"" + k("green") + "\"\n"
+            + "yellow = \"" + k("yellow") + "\"\nblue = \"" + k("blue") + "\"\npurple = \"" + k("magenta") + "\"\n"
+            + "cyan = \"" + k("cyan") + "\"\nwhite = \"" + k("foreground") + "\"\nbright_black = \"" + k("dark_foreground") + "\"\n"
+        save(outDir + "/starship.toml", /\[palettes\.jellybeans\]/.test(base)
+            ? base.replace(/\[palettes\.jellybeans\][\s\S]*$/, promptPalette) : base + "\n" + promptPalette)
+        writer.command = output
+        writer.running = true
     }
 
     // `qs ipc call theme set nord`, `qs ipc call theme list`
     IpcHandler {
         target: "theme"
-        function set(name: string): string { return theme.set(name) ? "ok" : "no theme called " + name }
+        function set(name: string): string { return theme.set(name) ? "ok" : theme.catalogReady ? "no valid theme called " + name : "theme catalog is not loaded" }
         function list(): string { return theme.names.join("\n") }
         function current(): string { return theme.name }
     }
