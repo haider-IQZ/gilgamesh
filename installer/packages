@@ -1,0 +1,64 @@
+# Installed into every Gilgamesh system (pacstrap). One package per line, # comments allowed.
+# The kernel comes from the installer (KERNEL), the NVIDIA drivers from packages-nvidia
+# (only for supported NVIDIA GPUs).
+
+# base
+base
+base-devel
+linux-firmware
+sudo
+grub
+efibootmgr
+xfsprogs
+dosfstools
+lz4                 # the initramfs is lz4-compressed (system/etc/mkinitcpio.conf.d)
+zram-generator
+networkmanager
+ufw
+git
+github-cli
+openssh
+
+# desktop
+ly
+hyprland
+quickshell
+foot
+nautilus
+xdg-desktop-portal-hyprland
+xdg-desktop-portal-gtk   # file dialogs + the settings portal (dark color scheme for Firefox and libadwaita apps)
+dconf               # GNOME/GTK settings database; the dark defaults live in system/etc/dconf
+hyprpolkitagent
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+rtkit               # realtime priority for PipeWire (only an optional dependency)
+grim
+slurp
+wl-clipboard
+
+# shell
+fish
+starship
+fzf
+fastfetch           # shown when a terminal opens (fish/greeting.fish)
+neovim
+
+# apps
+firefox
+mpv
+yt-dlp
+ffmpeg
+evince
+file-roller
+7zip
+
+# look
+inter-font
+ttf-jetbrains-mono-nerd
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
+papirus-icon-theme
+adw-gtk-theme

@@ -1,0 +1,7 @@
+# NVIDIA open drivers, installed only for Turing+ GPUs (see README.md).
+nvidia-open-dkms
+nvidia-utils
+lib32-nvidia-utils
+nvidia-settings
+egl-wayland
+libva-nvidia-driver
