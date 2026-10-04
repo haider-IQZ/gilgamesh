@@ -1,0 +1,98 @@
+name: Package pipeline implementation
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        required: true
+      rebuild:
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      kernel: ${{ steps.plan.outputs.kernel }}
+      ordinary: ${{ steps.plan.outputs.ordinary }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check upstream and select affected packages
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: bash ci/prepare.sh "$MODE" "$REBUILD"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan
+          path: ci/artifacts/plan.json
+          if-no-files-found: error
+          retention-days: 14
+  kernel:
+    needs: prepare
+    if: needs.prepare.outputs.kernel == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: plan
+          path: ci/artifacts
+      - name: Build kernel, headers and NVIDIA in one container
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/run-build.sh kernel
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: result-kernel
+          path: ci/artifacts/result-kernel/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+  packages:
+    needs: prepare
+    if: needs.prepare.outputs.ordinary == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: plan
+          path: ci/artifacts
+      - name: Build selected packages in dependency order
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GROUP: ${{ matrix.group }}
+        run: bash ci/run-build.sh "$GROUP"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: result-${{ matrix.group }}
+          path: ci/artifacts/result-${{ matrix.group }}/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14

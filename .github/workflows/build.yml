@@ -1,0 +1,55 @@
+name: Build changed packages
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - 'system/**'
+      - 'quickshell/**'
+      - 'hypr/**'
+      - 'fish/**'
+      - 'scripts/**'
+      - 'etc/**'
+      - 'kernel/**'
+      - 'build/**'
+      - 'ci/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'packages/**'
+      - 'system/**'
+      - 'quickshell/**'
+      - 'hypr/**'
+      - 'fish/**'
+      - 'scripts/**'
+      - 'etc/**'
+      - 'kernel/**'
+      - 'build/**'
+      - 'ci/**'
+      - '.github/workflows/**'
+permissions:
+  contents: read
+concurrency:
+  group: gilgamesh-repository-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  trusted:
+    if: vars.GILGAMESH_PUBLISH_ENABLED == 'true' && github.event_name == 'push'
+    uses: ./.github/workflows/pipeline.yml
+    with:
+      mode: push
+  pr:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/pipeline.yml
+    permissions:
+      contents: read
+    with:
+      mode: push
+    # No secrets forwarded, including same-repository PRs.
+  publication:
+    needs: trusted
+    if: always() && vars.GILGAMESH_PUBLISH_ENABLED == 'true' && github.event_name == 'push' && needs.trusted.result != 'cancelled'
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: write
+      issues: write

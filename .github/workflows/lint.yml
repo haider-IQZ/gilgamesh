@@ -1,0 +1,42 @@
+name: Lint installed files
+on:
+  push:
+    paths:
+      - 'system/**'
+      - 'hypr/**'
+      - 'installer/**'
+      - 'build/**'
+      - 'ci/**'
+      - 'iso/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'system/**'
+      - 'hypr/**'
+      - 'installer/**'
+      - 'build/**'
+      - 'ci/**'
+      - 'iso/**'
+      - '.github/workflows/**'
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    # The container runs as root, so apt needs no privilege escalation.
+    container: ubuntu:24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Install syntax checkers
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends bash git ca-certificates python3 shellcheck lua5.4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check overlays and run CI regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s ci/tests -v

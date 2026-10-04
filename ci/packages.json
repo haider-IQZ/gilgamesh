@@ -1,0 +1,35 @@
+{
+  "gilgamesh-settings": {
+    "sources": [
+      "system/",
+      "scripts/gilgamesh-dns",
+      "etc/sudoers.d/gilgamesh-dns"
+    ],
+    "after": []
+  },
+  "gilgamesh-shell": {
+    "sources": [
+      "quickshell/",
+      "hypr/hyprland.lua",
+      "fish/colors.fish",
+      "fish/prompt.fish",
+      "fish/starship.toml"
+    ],
+    "after": [
+      "gilgamesh-settings"
+    ]
+  },
+  "linux-tkg": {
+    "sources": [
+      "kernel/",
+      "build/"
+    ],
+    "after": []
+  },
+  "nvidia-open-tkg": {
+    "sources": [],
+    "after": [
+      "linux-tkg"
+    ]
+  }
+}

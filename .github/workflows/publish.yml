@@ -1,0 +1,64 @@
+name: Publish trusted main results
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  report:
+    if: vars.GILGAMESH_PUBLISH_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ci/artifacts
+      - run: mv ci/artifacts/plan/plan.json ci/artifacts/plan.json
+      - name: Create or update build failure issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/pipeline.py report
+  publish:
+    environment: pacman-repo
+    if: vars.GILGAMESH_PUBLISH_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Recover interrupted publication before reading build results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/pipeline.py recover
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ci/artifacts
+      - run: mv ci/artifacts/plan/plan.json ci/artifacts/plan.json
+      - run: bash ci/arch.sh image
+      - name: Validate results and prepare publication on current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/pipeline.py publish --prepare
+      - name: Sign prepared repository
+        env:
+          GILGAMESH_GPG_KEY: ${{ secrets.GILGAMESH_GPG_KEY }}
+          GILGAMESH_GPG_PASSPHRASE: ${{ secrets.GILGAMESH_GPG_PASSPHRASE }}
+          GILGAMESH_GPG_FINGERPRINT: ${{ vars.GILGAMESH_GPG_FINGERPRINT }}
+        run: |
+          if test -f ci/artifacts/publish/prepared.json; then
+            bash ci/sign.sh
+          fi
+      - name: Publish signed repository and commit state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/pipeline.py publish --finish

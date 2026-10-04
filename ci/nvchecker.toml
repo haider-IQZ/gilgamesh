@@ -1,0 +1,32 @@
+[__config__]
+oldver = "oldver.json"
+newver = "newver.json"
+keyfile = "$NVCHECKER_KEYFILE"
+http_timeout = 60
+
+# Local packages have no external version check. Content hashes in state.json
+# detect changes (including pushes coalesced by GitHub concurrency).
+[gilgamesh-settings]
+source = "manual"
+manual = "0.1.0"
+
+[gilgamesh-shell]
+source = "manual"
+manual = "0.1.0"
+
+[linux-tkg]
+source = "regex"
+url = "https://www.kernel.org/pub/linux/kernel/v7.x/"
+regex = 'href="linux-(7\.2\.[0-9]+)\.tar\.xz"'
+sort_version_key = "vercmp"
+
+# Deliberate review only. Match build/container.sh's pinned commit; never track HEAD.
+[tkg]
+source = "manual"
+manual = "85fc90b0bad984902e5edd63ed9c39bbaa33a806"
+
+[nvidia-open-tkg]
+# Query extra explicitly; do not follow NVIDIA tags or the AUR.
+source = "regex"
+url = "https://archlinux.org/packages/extra/x86_64/nvidia-utils/json/"
+regex = '"pkgver"\s*:\s*"([^"]+)"'
