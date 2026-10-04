@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!makepkg.conf.d/
+!makepkg.conf.d/gilgamesh.conf

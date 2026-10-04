@@ -1,0 +1,8 @@
+Gilgamesh Linux live / install environment
+
+The Go installer starts once on tty1. Run gilgamesh-install to start it again.
+Manual legacy Bash fallback: gilgamesh-install-bash (uses stock linux).
+Use Alt+F2 for a rescue shell. Installation requires UEFI and internet access.
+
+Wired DHCP connects automatically. Use iwctl for Wi-Fi or mmcli for mobile broadband.
+Installation_guide opens the Arch Linux reference guide.

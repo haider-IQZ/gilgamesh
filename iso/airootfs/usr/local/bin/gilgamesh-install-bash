@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+installer=/opt/gilgamesh/src/installer/install.sh
+if [[ ! -r $installer ]]; then
+    echo "Installer missing: rebuild the ISO with build/build.sh iso." >&2
+    exit 1
+fi
+
+exec bash "$installer" "$@"

@@ -1,0 +1,35 @@
+# Gilgamesh kernel config fragment for linux-tkg.
+# Copy it (a symlink is skipped: tkg looks for regular *.myfrag files) into the linux-tkg checkout.
+# tkg merges it with scripts/kconfig/merge_config.sh after all of its own config edits and
+# before `make olddefconfig`, so these values win over tkg's and Arch's.
+# The preparation gate also checks base-config requirements: virtio, storage, live filesystems,
+# PREEMPT with PREEMPT_DYNAMIC, LRU_GEN and HZ_1000. Do not assume upstream kept them.
+
+# THP only for programs that ask for it (base config has "always")
+# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set
+CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y
+
+# swap is zram; zswap in front of it would compress pages twice
+# CONFIG_ZSWAP_DEFAULT_ON is not set
+
+# guest idle polling; as a module nothing ever loads it (it only activates with KVM hint-dedicated)
+CONFIG_HALTPOLL_CPUIDLE=y
+
+# root filesystem built in, so the kernel can mount / without an initramfs
+CONFIG_XFS_FS=y
+
+# keep per-CPU workqueues (cache locality); the power saving is for laptops
+# CONFIG_WQ_POWER_EFFICIENT_DEFAULT is not set
+
+# Keep debug info + BTF in the build: sched_ext and BPF tools need BTF, and without it
+# resolve_btfids isn't built and tkg's -headers step stops at a "Press enter" prompt.
+# The package is still stripped (_STRIP): strip --strip-debug drops DWARF, keeps .BTF.
+# _STRIP=true also makes tkg enable DEBUG_INFO_NONE, one member of the same "Debug information"
+# choice, so set every member: exactly one =y, no matter in which order kconfig reads them.
+# CONFIG_DEBUG_INFO_NONE is not set
+# CONFIG_DEBUG_INFO_DWARF4 is not set
+# CONFIG_DEBUG_INFO_DWARF5 is not set
+CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y
+CONFIG_DEBUG_INFO_BTF=y
+CONFIG_DEBUG_INFO_BTF_MODULES=y
+CONFIG_SCHED_CLASS_EXT=y
