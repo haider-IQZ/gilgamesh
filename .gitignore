@@ -3,3 +3,13 @@
 branding/drafts/
 *.swp
 *~
+
+# private notes about my own machine are kept outside this repo
+PERFORMANCE.md
+repo/
+build/cache/
+out/
+__pycache__/
+*.pyc
+gilgamesh-signing-subkeys.asc
+installer/tests/.sandbox-*/
